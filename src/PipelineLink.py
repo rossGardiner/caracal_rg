@@ -5,11 +5,11 @@
 from src.PacketCallback import PacketCallback
 from src.AudioPacket import AudioPacket
 
-class PinelineLink(PacketCallback):
+class PipelineLink(PacketCallback):
 	def __init__(self):
 		self.callback = None
 		
-	def register_callback(self, callback: AudioPacket)
+	def register_callback(self, callback: AudioPacket):
 		self.callback = callback
 	
 	def next_packet(self, packet: AudioPacket):

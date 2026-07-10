@@ -3,7 +3,7 @@
 # Classes which inherit PacketCallback must implement the next_packet method.
 
 from abc import ABC, abstractmethod
-
+from src.AudioPacket import AudioPacket
 
 class PacketCallback(ABC):
     @abstractmethod
