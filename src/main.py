@@ -7,3 +7,6 @@ pc = PacketCallback
 
 from src.PipelineLink import PipelineLink
 pl = PipelineLink()
+
+from src.CaracalStreamer import CaracalStreamer
+cs = CaracalStreamer("/media/rossg/PortableSSD/BVC Sample Audio")
