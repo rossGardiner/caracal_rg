@@ -16,7 +16,7 @@ class PipelineLink(PacketCallback):
 		if self.callback is None:
 			return 
 		else:
-			self.callback(packet)
+			self.callback.next_packet(packet)
 		
 
 		
