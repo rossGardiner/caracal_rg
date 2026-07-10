@@ -10,3 +10,11 @@ pl = PipelineLink()
 
 from src.CaracalStreamer import CaracalStreamer
 cs = CaracalStreamer("/media/rossg/PortableSSD/BVC Sample Audio")
+
+from src.TerminalPrint import TerminalPrint
+tp = TerminalPrint()
+
+cs.register_callback(tp)
+
+cs.stream()
+

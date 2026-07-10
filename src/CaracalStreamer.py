@@ -5,12 +5,13 @@
 # To init a CaracalStreamer, you just need to pass a top level directory where sub-directories contain data from caracal sessions. The logic inside will visit each session's log file and create an AudioPacket instance for each, these will be called back to whatever callback you registered. 
 # Note, due to inheritance, it is technically possible to pipe AudioPackets into CaracalStreamer, but this implementation doesnt make use of that feature. 
 
-import caracal 
+import os
 from glob import glob
-import os 
 
+from caracal import SyslogParser
 
 from src.PipelineLink import PipelineLink
+from src.AudioPacket import AudioPacket
 
 
 class CaracalStreamer(PipelineLink):
@@ -60,6 +61,50 @@ class CaracalStreamer(PipelineLink):
             raise Exception(
                 "No syslogs found! Are you sure this is a valid CARACAL data directory?"
             )
+            
+    def stream(self) -> None:
+        for syslog_file in self.syslog_files:
+            parser = SyslogParser(syslog_file)
+            container = parser.process()
+
+            for session_idx, session in enumerate(container.sessions):
+                header = session.header
+
+                if not self.syslog_session_header_ok(header):
+                    sys_duration = getattr(header, "sysDuration", None)
+                    stats = getattr(header, "stats", None)
+                    num_files = getattr(stats, "num_files", None)
+
+                    print(
+                        f"WARNING: Skipping invalid CARACAL session "
+                        f"{session_idx} in {syslog_file}. "
+                        f"sysDuration={sys_duration}, "
+                        f"num_files={num_files}"
+                    )
+                    continue
+
+                packet = self.build_audio_packet_from_session(session, syslog_file)
+                self.next_packet(packet)
+                
+    def build_audio_packet_from_session(self, session, syslog_file: str) -> AudioPacket:
+
+        audio_paths = [
+            os.path.join(self.rootpath, audio_file.subpath)
+            for audio_file in session.audioFiles
+        ]
+
+        return AudioPacket(
+            audio_paths=audio_paths,
+            offset=0.0,
+            duration=session.header.sysDuration,
+            is_whole=True,
+            misc_metadata={
+                "source": "CARACAL",
+                "syslog_file": str(syslog_file),
+                "session_header": session.header,
+                "num_audio_files": len(session.audioFiles),
+            },
+        )
 
     def syslog_session_header_ok(self, header) -> bool:
         """
@@ -68,4 +113,8 @@ class CaracalStreamer(PipelineLink):
         Returns False if sysDuration <= 0.0 or num_files <= 0.
         """
         return header.sysDuration > 0.0 and header.stats.num_files > 0 
+        
+        
+        
+    
     
