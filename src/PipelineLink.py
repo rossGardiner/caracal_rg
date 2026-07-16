@@ -9,7 +9,7 @@ class PipelineLink(PacketCallback):
 	def __init__(self):
 		self.callback = None
 		
-	def register_callback(self, callback: AudioPacket):
+	def register_callback(self, callback):
 		self.callback = callback
 	
 	def next_packet(self, packet: AudioPacket):
