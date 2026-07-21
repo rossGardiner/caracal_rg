@@ -4,10 +4,11 @@
 
 from abc import ABC, abstractmethod
 from src.AudioPacket import AudioPacket
+from src.AudioBuffer import AudioBuffer
 
-class PacketCallback(ABC):
+class AudioCallback(ABC):
     @abstractmethod
-    def next_packet(self, packet: AudioPacket) -> None:
+    def next_packet(self, packet: AudioPacket | AudioBuffer) -> None:
         """
         Receive a new AudioPacket.
         """
