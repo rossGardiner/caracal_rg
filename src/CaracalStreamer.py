@@ -84,7 +84,7 @@ class CaracalStreamer(PipelineLink):
                     continue
 
                 packet = self.build_audio_packet_from_session(session, syslog_file)
-                self.next_packet(packet)
+                self.next_audio(packet)
                 
     def build_audio_packet_from_session(self, session, syslog_file: str) -> AudioPacket:
 

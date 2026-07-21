@@ -2,21 +2,23 @@
 # This class simply extends PacketCallback to allow the registration of a further callback in the chain. 
 # A PipelineLink instance can therefore both recieve and transmit AudioPackets
 
-from src.PacketCallback import PacketCallback
+from src.AudioCallback import AudioCallback
 from src.AudioPacket import AudioPacket
+from src.AudioBuffer import AudioBuffer
 
-class PipelineLink(PacketCallback):
+class PipelineLink(AudioCallback):
 	def __init__(self):
 		self.callback = None
 		
 	def register_callback(self, callback):
 		self.callback = callback
 	
-	def next_packet(self, packet: AudioPacket):
+	#default implementation 
+	def next_audio(self, packet):
 		if self.callback is None:
 			return 
 		else:
-			self.callback.next_packet(packet)
+			self.callback.next_audio(packet)
 		
 
 		

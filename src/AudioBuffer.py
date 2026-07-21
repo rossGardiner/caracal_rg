@@ -6,6 +6,7 @@
 
 
 from dataclasses import dataclass
+from src.AudioPacket import AudioPacket
 
 import numpy as np
 

@@ -8,8 +8,8 @@ from src.AudioBuffer import AudioBuffer
 
 class AudioCallback(ABC):
     @abstractmethod
-    def next_packet(self, packet: AudioPacket | AudioBuffer) -> None:
+    def next_audio(self, packet: AudioPacket | AudioBuffer) -> None:
         """
-        Receive a new AudioPacket.
+        Receive a new AudioPacket or AudioBuffer.
         """
         raise NotImplementedError

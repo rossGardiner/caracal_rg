@@ -1,11 +1,12 @@
 #TerminalPrint
 #this is a pipeline element which simply prints out a summary of AudioPackets as they pass through
 
-from src.PacketCallback import PacketCallback
+from src.AudioCallback import AudioCallback
 from src.AudioPacket import AudioPacket
+from src.AudioBuffer import AudioBuffer
 
 
-class TerminalPrint(PacketCallback):
+class TerminalPrint(AudioCallback):
     """
     Simple terminal/debug callback.
 
@@ -16,7 +17,10 @@ class TerminalPrint(PacketCallback):
         self.print_metadata = print_metadata
         self.count = 0
 
-    def next_packet(self, packet: AudioPacket) -> None:
+    def next_audio(self, packet: AudioPacket) -> None:
+        if isinstance(packet, AudioBuffer):
+            packet = audio_buffer.packet
+            
         self.count += 1
 
         print("=" * 80)
@@ -26,6 +30,7 @@ class TerminalPrint(PacketCallback):
         print(f"offset: {packet.offset}")
         print(f"duration: {packet.duration}")
         print(f"is_whole: {packet.is_whole}")
+        print(f"lat,lon: {packet.lat},{packet.lon}")
 
         if packet.audio_paths:
             print("files:")
@@ -38,3 +43,4 @@ class TerminalPrint(PacketCallback):
                 print(f"  {key}: {value}")
 
         print("=" * 80)
+        
