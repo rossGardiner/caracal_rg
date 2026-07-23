@@ -1,3 +1,6 @@
+*.txt
+*.lprof
+
 junk/
 venv/
 # Byte-compiled / optimized / DLL files

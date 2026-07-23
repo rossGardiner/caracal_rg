@@ -14,7 +14,13 @@ cs = CaracalStreamer("/media/rossg/PortableSSD/BVC Sample Audio")
 from src.TerminalPrint import TerminalPrint
 tp = TerminalPrint()
 
-cs.register_callback(tp)
+from src.AudioBufferLoader import AudioBufferLoader
+abl = AudioBufferLoader()
+
+
+cs.register_callback(abl)
+
+abl.register_callback(tp)
 
 cs.stream()
 

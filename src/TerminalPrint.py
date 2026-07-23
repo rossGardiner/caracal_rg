@@ -17,10 +17,15 @@ class TerminalPrint(AudioCallback):
         self.print_metadata = print_metadata
         self.count = 0
 
-    def next_audio(self, packet: AudioPacket) -> None:
-        if isinstance(packet, AudioBuffer):
-            packet = audio_buffer.packet
+    def next_audio(self, audio) -> None:
+        if isinstance(audio, AudioBuffer):
+            print(audio)
             
+            packet = audio.packet
+            exit(0)
+            
+        else:
+            packet = audio
         self.count += 1
 
         print("=" * 80)

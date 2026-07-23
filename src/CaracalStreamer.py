@@ -89,7 +89,7 @@ class CaracalStreamer(PipelineLink):
     def build_audio_packet_from_session(self, session, syslog_file: str) -> AudioPacket:
 
         audio_paths = [
-            os.path.join(self.rootpath, audio_file.subpath)
+            os.path.join(self.rootpath, session.path, audio_file.subpath)
             for audio_file in session.audioFiles
         ]
 
