@@ -8,7 +8,10 @@ import os
 import numpy as np
 import soundfile as sf
 
-from caracal.datagetter import DataGetter
+try:
+    from caracal.datagetter import DataGetter
+except ImportError:
+    print("Warning: caracal library not found. Continuing assuming input data are not in caracal format.")
 
 from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
