@@ -17,10 +17,19 @@ tp = TerminalPrint()
 from src.AudioBufferLoader import AudioBufferLoader
 abl = AudioBufferLoader()
 
+from src.HighPassFilter import HighPassFilter
+hps = HighPassFilter()
+
+from src.Resampler import Resampler
+rs = Resampler()
 
 cs.register_callback(abl)
 
-abl.register_callback(tp)
+abl.register_callback(hps)
+
+hps.register_callback(rs)
+
+rs.register_callback(tp)
 
 cs.stream()
 
