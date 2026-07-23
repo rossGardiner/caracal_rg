@@ -1,6 +1,7 @@
 #AudioBufferLoader
 #A pipeline link which takes an AudioPacket and produces AudioBuffers which refernce that packet, buffer sizes can be configured approprirately.
-#main function, load_buffers loads a list of buffers from the given wav files, using the soundfile lib, these buffers are emitted while there is still audio to load from the incoming packet.
+# treats the ordered WAV files referenced by an `AudioPacket` as one continuous logical audio stream. It loads audio into fixed-size, non-overlapping buffers and carries any partially filled buffer across file boundaries, taking the remaining samples from the beginning of the next WAV. Per-file read positions are tracked independently, while the accumulated buffer contents and emitted sample offset persist across files. The final buffer may be shorter than the configured size and is emitted without padding.
+
 
 import os
 
@@ -16,7 +17,7 @@ from src.PipelineLink import PipelineLink
 #import line_profiler
 
 class AudioBufferLoader(PipelineLink):
-    def __init__ (self, buffer_seconds: float = 60.0, is_caracal: bool = True):
+    def __init__ (self, buffer_seconds: float = 120.0, is_caracal: bool = True):
         super().__init__()
         if buffer_seconds <= 0:
             raise ValueError("buffer_seconds must be greater than zero")
@@ -83,6 +84,8 @@ class AudioBufferLoader(PipelineLink):
             file_duration_s = (
                 file_info.frames / file_info.samplerate
             )
+            
+            
 
             if sample_rate is None:
                 sample_rate = file_sample_rate
@@ -288,4 +291,8 @@ class AudioBufferLoader(PipelineLink):
             parts,
             axis=0,
         )
+
+        
+        
+        
 
