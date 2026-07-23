@@ -20,7 +20,7 @@ from src.PipelineLink import PipelineLink
 #import line_profiler
 
 class AudioBufferLoader(PipelineLink):
-    def __init__ (self, buffer_seconds: float = 120.0, is_caracal: bool = True):
+    def __init__ (self, buffer_seconds: float = 5.0, is_caracal: bool = True):
         super().__init__()
         if buffer_seconds <= 0:
             raise ValueError("buffer_seconds must be greater than zero")
