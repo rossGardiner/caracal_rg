@@ -23,13 +23,19 @@ hps = HighPassFilter()
 from src.Resampler import Resampler
 rs = Resampler()
 
+from src.EmbeddingsCreator import EmbeddingsCreator
+ec = EmbeddingsCreator(model_path="assets/perch_v2.onnx")
+
+
 cs.register_callback(abl)
 
 abl.register_callback(hps)
 
 hps.register_callback(rs)
 
-rs.register_callback(tp)
+rs.register_callback(ec)
+
+ec.register_callback(tp)
 
 cs.stream()
 
