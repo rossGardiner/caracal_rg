@@ -1,5 +1,5 @@
 # PipelineLink 
-# This class simply extends PacketCallback to allow the registration of a further callback in the chain. 
+# This class simply extends AudioCallback to allow the registration of a further callback in the chain. 
 # A PipelineLink instance can therefore both recieve and transmit AudioPackets
 
 from src.AudioCallback import AudioCallback
