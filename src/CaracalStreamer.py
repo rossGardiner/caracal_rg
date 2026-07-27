@@ -98,6 +98,8 @@ class CaracalStreamer(PipelineLink):
             offset=0.0,
             duration=session.header.sysDuration,
             is_whole=True,
+            lat=session.header.stats.median_GPS_lat,
+            lon=session.header.stats.median_GPS_lon,
             misc_metadata={
                 "source": "CARACAL",
                 "syslog_file": str(syslog_file),
