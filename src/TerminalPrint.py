@@ -4,11 +4,12 @@
 from src.AudioCallback import AudioCallback
 from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
+fron src.PipelineLink import PipelineLink
 
 from time import time
 
 
-class TerminalPrint(AudioCallback):
+class TerminalPrint(PipelineLink):
     """
     Simple terminal/debug callback.
 
