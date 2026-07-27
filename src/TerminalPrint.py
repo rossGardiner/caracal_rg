@@ -40,7 +40,7 @@ class TerminalPrint(PipelineLink):
         self.count += 1
 
         print("=" * 80)
-        print(f"AudioPacket #{self.count}")
+        print(f"AudioBuffer #{self.count}")
         print(f"id: {packet.id}")
         print(f"audio_paths: {len(packet.audio_paths)} file(s)")
         print(f"offset: {packet.offset}")
