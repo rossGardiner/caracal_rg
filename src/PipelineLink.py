@@ -26,4 +26,23 @@ class PipelineLink(AudioCallback):
     def configuration_parameters(self) -> dict[str, any]:
         """Return parameters that affect this link's output."""
         raise NotImplementedError 
+        
+    def configuration(self) -> dict[str, any]:
+        return {
+            "version": self.CONFIG_VERSION,
+            "parameters": self.configuration_parameters(),
+        }
+
+    def configuration_json(self) -> str:
+        return json.dumps(
+            self.configuration(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    def configuration_hash(self) -> str:
+        return hashlib.sha256(
+            self.configuration_json().encode("utf-8")
+        ).hexdigest()
 
