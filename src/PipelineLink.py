@@ -7,6 +7,8 @@ from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
 
 class PipelineLink(AudioCallback):
+    CONFIG_VERSION = 1 
+    
 	def __init__(self):
 		self.callback = None
 		
