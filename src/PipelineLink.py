@@ -21,6 +21,11 @@ class PipelineLink(AudioCallback):
 			return 
 		else:
 			self.callback.next_audio(packet)
+	
+	@abstractmethod	
+	def configuration_parameters(self) -> dict[str, Any]:
+        """Return parameters that affect this link's output."""
+        raise NotImplementedError 
 		
 
 		
