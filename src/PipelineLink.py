@@ -7,25 +7,20 @@ from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
 
 class PipelineLink(AudioCallback):
-    CONFIG_VERSION = 1 
-    
-	def __init__(self):
-		self.callback = None
-		
-	def register_callback(self, callback):
-		self.callback = callback
-	
-	#default implementation 
-	def next_audio(self, packet):
-		if self.callback is None:
-			return 
-		else:
-			self.callback.next_audio(packet)
-	
-	@abstractmethod	
-	def configuration_parameters(self) -> dict[str, Any]:
+    CONFIG_VERSION = 1  
+    def __init__(self):
+        self.callback = None	
+    def register_callback(self, callback):
+        self.callback = callback
+
+    #default implementation 
+    def next_audio(self, packet):
+        if self.callback is None:
+            return 
+        else:
+            self.callback.next_audio(packet)
+    @abstractmethod	
+    def configuration_parameters(self) -> dict[str, Any]:
         """Return parameters that affect this link's output."""
         raise NotImplementedError 
-		
 
-		
