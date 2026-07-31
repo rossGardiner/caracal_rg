@@ -17,6 +17,7 @@ class TerminalPrint(PipelineLink):
     """
 
     def __init__(self, print_metadata: bool = False):
+        super().__init__()
         self.print_metadata = print_metadata
         self.count = 0
         self.t_start = time()
