@@ -19,7 +19,9 @@ class EmbeddingsCreator(PipelineLink):
         use_cuda: bool = True,
     ) -> None:
         super().__init__()
-
+        
+        self.model_path = model_path
+        
         model_path_object = Path(model_path)
 
         if not model_path_object.is_file():
@@ -58,6 +60,11 @@ class EmbeddingsCreator(PipelineLink):
         self.input_name = model_inputs[0].name
         self.input_shape = model_inputs[0].shape
         self.input_type = model_inputs[0].type
+    
+    def configuration_parameters(self) -> dict[str, Any]:
+        return {
+            "model_path": self.model_path, #beware, changes in model path will force new embeddings! 
+        }
 
     def next_audio(
         self,

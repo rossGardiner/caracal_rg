@@ -22,6 +22,11 @@ class Resampler(PipelineLink):
         self.target_sample_rate = int(
             target_sample_rate
         )
+        
+    def configuration_parameters(self) -> dict[str, Any]:
+        return {
+            "target_sample_rate": self.target_sample_rate,
+        }
 
     def next_audio(self, audio: AudioBuffer) -> None:
         if not isinstance(audio, AudioBuffer):

@@ -21,6 +21,11 @@ class TerminalPrint(PipelineLink):
         self.count = 0
         self.t_start = time()
         self.t_recent = time()
+        
+    def configuration_parameters(self) -> dict[str, Any]:
+        return {
+            "print_metadata": self.print_metadata,
+        }
 
     def next_audio(self, audio) -> None:
         if isinstance(audio, AudioBuffer):
@@ -47,6 +52,7 @@ class TerminalPrint(PipelineLink):
         print(f"duration: {packet.duration}")
         print(f"is_whole: {packet.is_whole}")
         print(f"lat,lon: {packet.lat},{packet.lon}")
+
 
         #if packet.audio_paths:
         #    print("files:")
