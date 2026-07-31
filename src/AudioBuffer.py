@@ -27,4 +27,6 @@ class AudioBuffer:
     # Optional context included for filtering/resampling
     left_context_samples: int = 0
     right_context_samples: int = 0
+    
+    embeddings = {}
 

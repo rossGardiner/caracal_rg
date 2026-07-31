@@ -36,6 +36,5 @@ class AudioPacket:
     # Misc metadata, a rough place to store other metadata associated with this AudioPacket
     misc_metadata : dict = field(default_factory=dict)
     
-    # Dictionary to store pointers on disk to embeddings attributed to this AudioPacket
-    embeddings_point_dict : dict = field(default_factory=dict)
+    
 	
