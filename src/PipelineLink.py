@@ -12,6 +12,7 @@ class PipelineLink(AudioCallback):
     CONFIG_VERSION = 1  
     def __init__(self):
         self.callback = None	
+        
     def register_callback(self, callback):
         self.callback = callback
 
@@ -45,4 +46,32 @@ class PipelineLink(AudioCallback):
         return hashlib.sha256(
             self.configuration_json().encode("utf-8")
         ).hexdigest()
+        
+    def get_pipeline_config(self):
+        links = [self.configuration()]
+
+        if self.callback is None:
+            return {
+                "schema_version": 1,
+                "links": links,
+            }
+
+        if not isinstance(self.callback, PipelineLink):
+            raise TypeError(
+                f"{type(self).__name__} callback must be a "
+                "PipelineLink to build a pipeline configuration"
+            )
+
+        downstream_config = (
+            self.callback.get_pipeline_config()
+        )
+
+        links.extend(
+            downstream_config["links"]
+        )
+
+        return {
+            "schema_version": 1,
+            "links": links,
+        }
 
