@@ -40,7 +40,7 @@ class HighPassFilter(PipelineLink):
         self.current_sample_rate: int | None = None
         self.current_channels: int | None = None
         
-    def configuration_parameters(self) -> dict[str, Any]:
+    def configuration_parameters(self) -> dict[str, any]:
         return {
             "order": self.order,
             "cutoff_hz": self.cutoff_hz

@@ -31,7 +31,7 @@ class CaracalStreamer(PipelineLink):
 
         self.register_syslog_files()
         
-    def configuration_parameters(self) -> dict[str, Any]:
+    def configuration_parameters(self) -> dict[str, any]:
         return {
             "rootpath": self.rootpath,
         }

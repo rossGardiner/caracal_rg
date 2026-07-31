@@ -23,7 +23,7 @@ class Resampler(PipelineLink):
             target_sample_rate
         )
         
-    def configuration_parameters(self) -> dict[str, Any]:
+    def configuration_parameters(self) -> dict[str, any]:
         return {
             "target_sample_rate": self.target_sample_rate,
         }

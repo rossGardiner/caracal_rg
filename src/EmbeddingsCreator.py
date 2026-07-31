@@ -61,7 +61,7 @@ class EmbeddingsCreator(PipelineLink):
         self.input_shape = model_inputs[0].shape
         self.input_type = model_inputs[0].type
     
-    def configuration_parameters(self) -> dict[str, Any]:
+    def configuration_parameters(self) -> dict[str, any]:
         return {
             "model_path": self.model_path, #beware, changes in model path will force new embeddings! 
         }

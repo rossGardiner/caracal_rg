@@ -28,7 +28,7 @@ class AudioBufferLoader(PipelineLink):
         
         self.is_caracal = is_caracal
         
-    def configuration_parameters(self) -> dict[str, Any]:
+    def configuration_parameters(self) -> dict[str, any]:
         return {
             "buffer_seconds": self.buffer_seconds,
             "is_caracal": self.is_caracal

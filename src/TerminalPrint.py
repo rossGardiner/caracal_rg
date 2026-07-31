@@ -22,7 +22,7 @@ class TerminalPrint(PipelineLink):
         self.t_start = time()
         self.t_recent = time()
         
-    def configuration_parameters(self) -> dict[str, Any]:
+    def configuration_parameters(self) -> dict[str, any]:
         return {
             "print_metadata": self.print_metadata,
         }
