@@ -105,6 +105,8 @@ class CaracalStreamer(PipelineLink):
                 "syslog_file": str(syslog_file),
                 "session_header": session.header,
                 "num_audio_files": len(session.audioFiles),
+                "device_id": session.header.headerID.deviceID,
+                "card_id" : session.header.headerID.cardID,                
             },
         )
 
