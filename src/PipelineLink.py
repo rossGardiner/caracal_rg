@@ -12,9 +12,16 @@ class PipelineLink(AudioCallback):
     CONFIG_VERSION = 1  
     def __init__(self):
         self.callback = None	
+        self.previous = None
         
-    def register_callback(self, callback):
+    def register_callback(
+        self,
+        callback,
+    ):
         self.callback = callback
+
+        if isinstance(callback, PipelineLink):
+            callback.previous = self
 
     #default implementation 
     def next_audio(self, packet):
