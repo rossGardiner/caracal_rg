@@ -54,31 +54,23 @@ class PipelineLink(AudioCallback):
             self.configuration_json().encode("utf-8")
         ).hexdigest()
         
-    def get_pipeline_config(self):
-        links = [self.configuration()]
+    def get_config_links(self):
+        """
+        Recursively collect configurations from the beginning of the
+        chain through this link.
+        """
+        if self.previous is None:
+            links = []
+        else:
+            links = self.previous.get_config_links()
 
-        if self.callback is None:
-            return {
-                "schema_version": 1,
-                "links": links,
-            }
+        links.append(self.configuration())
 
-        if not isinstance(self.callback, PipelineLink):
-            raise TypeError(
-                f"{type(self).__name__} callback must be a "
-                "PipelineLink to build a pipeline configuration"
-            )
-
-        downstream_config = (
-            self.callback.get_pipeline_config()
-        )
-
-        links.extend(
-            downstream_config["links"]
-        )
-
+        return links
+    
+    def get_config(self):
         return {
             "schema_version": 1,
-            "links": links,
+            "links": self.get_config_links(),
         }
 

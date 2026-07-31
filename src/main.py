@@ -37,5 +37,11 @@ rs.register_callback(ec)
 
 ec.register_callback(tp)
 
+print(cs.get_config())
+
+print(ec.get_config())
+
+print(tp.get_config())
+exit(0)
 cs.stream()
 
