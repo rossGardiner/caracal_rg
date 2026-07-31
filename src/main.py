@@ -5,14 +5,14 @@ ap = AudioPacket()
 from src.AudioCallback import AudioCallback
 ac = AudioCallback
 
-from src.PipelineLink import PipelineLink
-pl = PipelineLink()
+from src.EmptyLink import EmptyLink
+el = EmptyLink()
 
 from src.CaracalStreamer import CaracalStreamer
 cs = CaracalStreamer("/media/rossg/PortableSSD/BVC Sample Audio")
 
 from src.TerminalPrint import TerminalPrint
-tp = TerminalPrint()
+tp = TerminalPrint(print_metadata=True)
 
 from src.AudioBufferLoader import AudioBufferLoader
 abl = AudioBufferLoader()
