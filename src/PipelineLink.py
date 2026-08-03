@@ -2,7 +2,10 @@
 # This class simply extends AudioCallback to allow the registration of a further callback in the chain. 
 # A PipelineLink instance can therefore both recieve and transmit AudioPackets
 
+import json
 from abc import abstractmethod
+from hashlib import sha256
+
 
 from src.AudioCallback import AudioCallback
 from src.AudioPacket import AudioPacket
@@ -50,7 +53,7 @@ class PipelineLink(AudioCallback):
         )
 
     def configuration_hash(self) -> str:
-        return hashlib.sha256(
+        return sha256(
             self.configuration_json().encode("utf-8")
         ).hexdigest()
         
