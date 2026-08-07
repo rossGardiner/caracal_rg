@@ -40,6 +40,7 @@ class PipelineLink(AudioCallback):
         
     def configuration(self) -> dict[str, any]:
         return {
+            "link_type": type(self).__name__,
             "version": self.CONFIG_VERSION,
             "parameters": self.configuration_parameters(),
         }
