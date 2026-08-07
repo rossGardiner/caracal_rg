@@ -15,11 +15,13 @@ ort.preload_dlls(directory="")
 class EmbeddingsCreator(PipelineLink):
     def __init__(
         self,
-        model_path: str,
-        use_cuda: bool = True,
-    ) -> None:
+        model_path,
+        use_cuda=True,
+        embedding_name="perch_v2",
+    ):
         super().__init__()
-        
+
+        self.embedding_name = embedding_name
         self.model_path = model_path
         
         model_path_object = Path(model_path)
@@ -65,35 +67,49 @@ class EmbeddingsCreator(PipelineLink):
         return {
             "model_path": self.model_path, #beware, changes in model path will force new embeddings! 
         }
-
-    def next_audio(
-        self,
-        audio: AudioBuffer,
-    ) -> None:
+    
+    def next_audio(self, audio):
         if not isinstance(audio, AudioBuffer):
             raise TypeError(
                 "EmbeddingsCreator expects an AudioBuffer"
             )
 
-        model_input = self._prepare_input(
-            audio
-        )
+        if self.embedding_name in audio.embeddings:
+            if self.callback is not None:
+                self.callback.next_audio(audio)
 
-        # Run all model outputs. They are deliberately discarded because this
-        # link currently exists only to perform inference before forwarding
-        # the source AudioBuffer.
-        self.session.run(
+            return
+
+        model_input = self._prepare_input(audio)
+
+        outputs = self.session.run(
             None,
             {
                 self.input_name: model_input,
             },
         )
 
-        if self.callback is not None:
-            self.callback.next_audio(
-                audio
+        if len(outputs) == 0:
+            raise RuntimeError(
+                "The ONNX model returned no outputs"
             )
 
+        pipeline_hash = self.get_config_hash()
+
+        audio.embeddings[self.embedding_name] = {
+            "values": np.asarray(outputs[0]),
+            "pipeline_hash": pipeline_hash,
+            "metadata": {
+                "input_name": self.input_name,
+                "input_shape": self.input_shape,
+                "output_index": 0,
+            },
+            "loaded_from_cache": False,
+        }
+
+        if self.callback is not None:
+            self.callback.next_audio(audio)
+            
     def _prepare_input(
         self,
         audio: AudioBuffer,
