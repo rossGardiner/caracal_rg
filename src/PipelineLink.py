@@ -76,4 +76,17 @@ class PipelineLink(AudioCallback):
             "schema_version": 1,
             "links": self.get_config_links(),
         }
+        
+    def get_config_json(self):
+        return json.dumps(
+            self.get_config(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    
+    def get_config_hash(self):
+        return sha256(
+            self.get_config_json().encode("utf-8")
+        ).hexdigest()
 
