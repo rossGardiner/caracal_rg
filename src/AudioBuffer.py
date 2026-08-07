@@ -13,6 +13,10 @@ import numpy as np
 
 @dataclass
 class AudioBuffer:
+
+    # UUID field to keep track of things
+    id: str = field(default_factory=lambda: uuid4().hex)
+    
     packet: AudioPacket
 
     waveform: np.ndarray
