@@ -6,7 +6,7 @@ from src.PipelineLink import PipelineLink
 
 
 class EmbeddingCacheLoader(PipelineLink):
-    INCLUDE_IN_EMBEDDING_HASH = False
+    INCLUDE_IN_PIPELINE_CONFIG = False
 
     def __init__(
         self,

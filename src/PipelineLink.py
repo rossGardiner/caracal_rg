@@ -12,6 +12,7 @@ from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
 
 class PipelineLink(AudioCallback):
+    INCLUDE_IN_PIPELINE_CONFIG = True
     CONFIG_VERSION = 1  
     def __init__(self):
         self.callback = None	
@@ -59,16 +60,17 @@ class PipelineLink(AudioCallback):
         ).hexdigest()
         
     def get_config_links(self):
-        """
-        Recursively collect configurations from the beginning of the
-        chain through this link.
-        """
         if self.previous is None:
             links = []
         else:
-            links = self.previous.get_config_links()
+            links = list(
+                self.previous.get_config_links()
+            )
 
-        links.append(self.configuration())
+        if self.INCLUDE_IN_PIPELINE_CONFIG:
+            links.append(
+                self.configuration()
+            )
 
         return links
     
