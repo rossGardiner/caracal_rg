@@ -4,18 +4,18 @@
 # Each AudioBuffer must link back to the AudioPacket object which defines the files and metadata attributed to the section of audio loaded. 
 # AudioBuffer does store data in RAM, so be careful how much buffer and context size are allocated. 
 
+import numpy as np
+from dataclasses import dataclass, field
+from uuid import uuid4
 
-from dataclasses import dataclass
 from src.AudioPacket import AudioPacket
 
-import numpy as np
 
 
 @dataclass
 class AudioBuffer:
 
-    # UUID field to keep track of things
-    id: str = field(default_factory=lambda: uuid4().hex)
+   
     
     packet: AudioPacket
 
@@ -33,4 +33,6 @@ class AudioBuffer:
     right_context_samples: int = 0
     
     embeddings = {}
-
+    
+    # UUID field to keep track of things
+    id: str = field(default_factory=lambda: uuid4().hex)
