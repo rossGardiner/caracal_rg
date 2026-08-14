@@ -54,6 +54,7 @@ class EmbeddingCacheSaver(PipelineLink):
             "loaded_from_cache",
             False,
         ):
+
             self.cache.save(
                 audio_id=audio.id,
                 pipeline_hash=embedding["pipeline_hash"],

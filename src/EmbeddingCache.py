@@ -31,7 +31,7 @@ class EmbeddingCache:
         )
 
         if not path.is_file():
-            print(f"nothing found at {path}")
+
             return None
 
         with np.load(path, allow_pickle=False) as saved:
@@ -39,13 +39,12 @@ class EmbeddingCache:
             metadata = json.loads(
                 saved["metadata"].item()
             )
-            metadata["loaded_from_cache"] = True
         return {
             "values": values,
             "pipeline_hash": pipeline_hash,
-            "metadata": metadata
+            "metadata": metadata,
+            "loaded_from_cache" : True
         }
-
     def save(
         self,
         audio_id,
@@ -85,7 +84,6 @@ class EmbeddingCache:
         )
 
         return path
-
     def _get_path(
         self,
         audio_id,

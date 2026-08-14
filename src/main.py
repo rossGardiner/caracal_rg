@@ -26,22 +26,36 @@ rs = Resampler()
 from src.EmbeddingsCreator import EmbeddingsCreator
 ec = EmbeddingsCreator(model_path="assets/perch_v2.onnx")
 
+from src.EmbeddingCache import EmbeddingCache
+ecache = EmbeddingCache(root_directory="cache/embeddings")
+
+from src.EmbeddingCacheLoader import EmbeddingCacheLoader
+ecl = EmbeddingCacheLoader(cache=ecache, embeddings_creator=ec)
+
+from src.EmbeddingCacheSaver import EmbeddingCacheSaver
+ecs = EmbeddingCacheSaver(cache=ecache, embeddings_creator=ec)
+
+from src.SpeedometerLink import SpeedometerLink
+sl = SpeedometerLink()
 
 cs.register_callback(abl)
 
 abl.register_callback(hps)
 
-hps.register_callback(rs)
+hps.register_callback(sl)
 
-rs.register_callback(ec)
+sl.register_callback(rs)
 
-ec.register_callback(tp)
+#rs.register_callback(ec)
+#embeddings caching block
+rs.register_callback(ecl)
+ecl.register_callback(ec)
+ec.register_callback(ecs)
 
-print(cs.get_config())
 
-print(ec.get_config())
+#ecs.register_callback(tp)
 
-print(tp.get_config())
-exit(0)
+print(ecs.get_config_json())
+#exit(0)
 cs.stream()
 

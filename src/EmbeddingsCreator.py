@@ -73,13 +73,11 @@ class EmbeddingsCreator(PipelineLink):
             raise TypeError(
                 "EmbeddingsCreator expects an AudioBuffer"
             )
-
         if self.embedding_name in audio.embeddings:
             if self.callback is not None:
                 self.callback.next_audio(audio)
-
             return
-
+        print("computing")
         model_input = self._prepare_input(audio)
 
         outputs = self.session.run(
