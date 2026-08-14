@@ -15,30 +15,37 @@ from src.AudioPacket import AudioPacket
 
 
 class CaracalStreamer(PipelineLink):
-    """
-    Takes a CARACAL data directory and creates AudioPacket instances from each
-    session in the directory.
+    """Pipeline source that discovers CARACAL session syslog files and emits AudioPackets.
 
-    The top-level directory is expected to contain one subdirectory per CARACAL
-    session. Each session directory should contain a syslog.txt file.
+    The streamer finds syslog.txt files under a root directory and converts each
+    session into an AudioPacket which is emitted downstream via next_audio.
     """
 
     def __init__(self, rootpath: str):
+        """Create a CaracalStreamer for a CARACAL data root.
+
+        Args:
+            rootpath (str): Top-level directory containing per-session subdirectories.
+        """
         super().__init__()
 
         self.rootpath = rootpath
         self.syslog_files: list[str] = []
 
         self.register_syslog_files()
-        
+
     def configuration_parameters(self) -> dict[str, any]:
+        """Return the streamer's configuration parameters.
+
+        Returns:
+            dict: Contains 'rootpath'.
+        """
         return {
             "rootpath": self.rootpath,
         }
 
     def register_syslog_files(self) -> None:
-        """
-        Search rootpath for syslog files.
+        """Discover syslog.txt files under rootpath and register them.
 
         One syslog.txt is expected for each immediate subdirectory.
         """

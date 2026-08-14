@@ -10,6 +10,10 @@ from time import time
 
 
 class TerminalPrint(PipelineLink):
+    """Simple debug callback that prints AudioPacket/AudioBuffer summaries.
+
+    Can optionally print per-packet misc_metadata and timing information.
+    """
     """
     Simple terminal/debug callback.
 
@@ -17,18 +21,33 @@ class TerminalPrint(PipelineLink):
     """
 
     def __init__(self, print_metadata: bool = False):
+        """Create a TerminalPrint instance.
+
+        Args:
+            print_metadata (bool): Whether to print packet.misc_metadata.
+        """
         super().__init__()
         self.print_metadata = print_metadata
         self.count = 0
         self.t_start = time()
         self.t_recent = time()
-        
+
     def configuration_parameters(self) -> dict[str, any]:
+        """Return configuration parameters for TerminalPrint.
+
+        Returns:
+            dict: Contains 'print_metadata'.
+        """
         return {
             "print_metadata": self.print_metadata,
         }
 
     def next_audio(self, audio) -> None:
+        """Print a readable summary for either AudioBuffer or AudioPacket.
+
+        Args:
+            audio (AudioBuffer | AudioPacket): The object to print.
+        """
         if isinstance(audio, AudioBuffer):
             #print(audio)
             print(f"Sample rate: {audio.sample_rate}")
@@ -39,8 +58,8 @@ class TerminalPrint(PipelineLink):
             t_passed_recent = time() - self.t_recent
             print(f"Passed time start: {t_passed_start}s")
             print(f"Passed time recent: {t_passed_recent}s")
-            self.t_recent = time() 
-            
+            self.t_recent = time()
+
         else:
             packet = audio
         self.count += 1

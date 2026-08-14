@@ -15,12 +15,23 @@ from src.AudioPacket import AudioPacket
 def _make_id_of_audio_buffer(sample_rate, start_offset_s, valid_samples):
     identity_string = f"{sample_rate}, + {start_offset_s} + {valid_samples}"
     return sha256(identity_string.encode("utf-8")).hexdigest()
-    
+
 @dataclass
 class AudioBuffer:
+    """In-memory container holding a waveform slice and metadata linking to its AudioPacket.
 
-   
-    
+    Attributes:
+        packet (AudioPacket): Source packet describing files and metadata.
+        waveform (np.ndarray): Array of audio samples (mono or (samples, channels)).
+        sample_rate (int): Sampling rate in Hz.
+        start_offset_s (float): Time offset in seconds of the first retained sample.
+        valid_samples (int): Number of meaningful samples in waveform.
+        left_context_samples (int): Number of left-context samples included.
+        right_context_samples (int): Number of right-context samples included.
+        embeddings (dict): Map of embedding name -> embedding dict.
+        id (str): Deterministic id derived from identifying properties.
+    """
+
     packet: AudioPacket
 
     waveform: np.ndarray
@@ -35,11 +46,11 @@ class AudioBuffer:
     # Optional context included for filtering/resampling
     left_context_samples: int = 0
     right_context_samples: int = 0
-    
+
     embeddings: dict = field(
         default_factory=dict
     )
-    
+
     # a buffers id is a hash of its idenfiying properties
     id: str = field(
         init=False
@@ -51,5 +62,5 @@ class AudioBuffer:
             self.start_offset_s,
             self.valid_samples,
         )
-    
+
 

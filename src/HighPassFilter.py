@@ -13,11 +13,22 @@ from src.AudioBuffer import AudioBuffer
 
 
 class HighPassFilter(PipelineLink):
+    """Causal high-pass filter link that preserves filter state across buffers.
+
+    Maintains internal IIR filter state across consecutive AudioBuffers from the
+    same AudioPacket to provide continuous filtering across file boundaries.
+    """
     def __init__(
         self,
         cutoff_hz: float = 60.0,
         order: int = 4,
     ) -> None:
+        """Create a HighPassFilter.
+
+        Args:
+            cutoff_hz (float): Cutoff frequency in Hz; must be > 0 and below Nyquist.
+            order (int): Filter order; must be > 0.
+        """
         super().__init__()
 
         if cutoff_hz <= 0:
@@ -39,7 +50,7 @@ class HighPassFilter(PipelineLink):
         self.current_packet_id: str | None = None
         self.current_sample_rate: int | None = None
         self.current_channels: int | None = None
-        
+
     def configuration_parameters(self) -> dict[str, any]:
         return {
             "order": self.order,

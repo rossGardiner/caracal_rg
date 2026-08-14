@@ -7,12 +7,22 @@ from src.PipelineLink import PipelineLink
 
 
 class SpeedometerLink(PipelineLink):
+    """Lightweight telemetry link that prints buffer throughput statistics.
+
+    Reports instantaneous and average buffer processing rates and an estimated
+    real-time speedup relative to audio duration.
+    """
     INCLUDE_IN_PIPELINE_CONFIG = False
 
     def __init__(
         self,
         report_interval_s=1.0,
     ):
+        """Create a SpeedometerLink.
+
+        Args:
+            report_interval_s (float): Interval in seconds between printed reports.
+        """
         super().__init__()
 
         self.report_interval_s = report_interval_s
@@ -24,9 +34,22 @@ class SpeedometerLink(PipelineLink):
         self.interval_start_time = self.start_time
 
     def configuration_parameters(self):
+        """Return configuration parameters for the speedometer.
+
+        Returns:
+            dict: Empty dict (no exported parameters).
+        """
         return {}
 
     def next_audio(self, audio):
+        """Record a processed AudioBuffer and print periodic throughput stats.
+
+        Args:
+            audio (AudioBuffer): Buffer to account for.
+
+        Raises:
+            TypeError: If audio is not an AudioBuffer.
+        """
         if not isinstance(audio, AudioBuffer):
             raise TypeError(
                 "PipelineSpeedTest expects an AudioBuffer"
@@ -61,7 +84,10 @@ class SpeedometerLink(PipelineLink):
                 f"{current_rate:.2f} buffers/s "
                 f"(average {average_rate:.2f} buffers/s, "
                 f"total {self.total_buffers}), "
-                f"real-time speedup: {average_rate * audio.valid_samples/audio.sample_rate:.2f}x"
+                f"real-time speedup: {average_rate * audio.valid_samples}")_samples}")
+
+            self.interval_start_time = now
+            self.interval_buffers = 0_samples/audio.sample_rate:.2f}x"
             )
 
             self.interval_buffers = 0

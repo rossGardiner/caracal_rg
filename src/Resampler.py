@@ -11,7 +11,17 @@ from src.PipelineLink import PipelineLink
 
 
 class Resampler(PipelineLink):
+    """Resample AudioBuffer waveforms to a target sample rate.
+
+    Uses librosa.resample and returns a new AudioBuffer instance with updated
+    sample_rate and valid_samples while preserving packet linkage.
+    """
     def __init__(self, target_sample_rate: int = 32000) -> None:
+        """Create a Resampler.
+
+        Args:
+            target_sample_rate (int): Target sampling rate in Hz (> 0).
+        """
         super().__init__()
 
         if target_sample_rate <= 0:
@@ -22,8 +32,13 @@ class Resampler(PipelineLink):
         self.target_sample_rate = int(
             target_sample_rate
         )
-        
+
     def configuration_parameters(self) -> dict[str, any]:
+        """Return configuration parameters for the resampler.
+
+        Returns:
+            dict: Contains 'target_sample_rate'.
+        """
         return {
             "target_sample_rate": self.target_sample_rate,
         }

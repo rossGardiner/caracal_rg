@@ -11,30 +11,42 @@ from uuid import uuid4
 
 @dataclass
 class AudioPacket:
+    """Lightweight record describing one logical audio event (file paths + metadata).
+
+    Fields:
+        id (str): UUID hex identifier.
+        audio_paths (list[str]): Ordered list of file paths making up the audio.
+        offset (float): Offset (seconds) to the part of interest within the first file.
+        duration (float|None): Duration in seconds of the region of interest.
+        is_whole (bool): Whether the region is the entire audio collection.
+        lat, lon (float|None): Optional geolocation.
+        capture_start_time (int|None): Unix time of capture start.
+        misc_metadata (dict): Arbitrary metadata.
+    """
     # UUID field to keep track of things
     id: str = field(default_factory=lambda: uuid4().hex)
 
     # Ordered list of continuous audio files
     audio_paths: list[str] = field(default_factory=list)
-    
+
     # Offset, in seconds, to the part of the audio of interest
     offset: float = 0.0
-    
+
     # Duration, in seconds, of the audio of interest
-    duration: float | None = None 
-    
+    duration: float | None = None
+
     # Is the snippet of interest the entire collection of audio?
     is_whole: bool = True
-    
+
     # Latitude, Longitude, for spatial processing
     lat : float | None = None
     lon : float | None  = None
-    
-    # Unix time of the capture start 
+
+    # Unix time of the capture start
     capture_start_time: int | None = None
-    
+
     # Misc metadata, a rough place to store other metadata associated with this AudioPacket
     misc_metadata : dict = field(default_factory=dict)
-    
-    
-	
+
+
+

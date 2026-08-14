@@ -20,15 +20,33 @@ from src.PipelineLink import PipelineLink
 #import line_profiler
 
 class AudioBufferLoader(PipelineLink):
+    """Pipeline link that loads fixed-size AudioBuffer objects from audio files.
+
+    Treats the list of WAV files in an AudioPacket as a continuous logical
+    stream and emits non-overlapping AudioBuffers of a configured duration.
+    Partially-filled buffers at file boundaries are carried forward across
+    files; the final buffer may be shorter than the configured size.
+    """
     def __init__ (self, buffer_seconds: float = 5.0, is_caracal: bool = True):
+        """Create an AudioBufferLoader.
+
+        Args:
+            buffer_seconds (float): Desired buffer length in seconds; must be > 0.
+            is_caracal (bool): If True, attempt to use caracal.DataGetter where available.
+        """
         super().__init__()
         if buffer_seconds <= 0:
             raise ValueError("buffer_seconds must be greater than zero")
         self.buffer_seconds = float(buffer_seconds)
-        
+
         self.is_caracal = is_caracal
-        
+
     def configuration_parameters(self) -> dict[str, any]:
+        """Return configuration parameters affecting emitted AudioBuffers.
+
+        Returns:
+            dict: Keys include 'buffer_seconds' and 'is_caracal'.
+        """
         return {
             "buffer_seconds": self.buffer_seconds,
             "is_caracal": self.is_caracal
@@ -36,11 +54,18 @@ class AudioBufferLoader(PipelineLink):
 
     
     def next_audio(self, packet: AudioPacket) -> None:
+        """Convert an AudioPacket (list of files) into one-or-more AudioBuffer items.
+
+        Args:
+            packet (AudioPacket): Packet describing audio files and offsets.
+
+        Raises:
+            TypeError: If packet is not an AudioPacket.
+        """
         if not isinstance(packet, AudioPacket):
             raise TypeError(
                 "AudioBufferLoader expects an AudioPacket"
             )
-        
 
         if self.callback is None:
             return

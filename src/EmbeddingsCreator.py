@@ -13,17 +13,34 @@ from src.PipelineLink import PipelineLink
 ort.preload_dlls(directory="")
 
 class EmbeddingsCreator(PipelineLink):
+    """Run an ONNX embedding model on AudioBuffer objects and attach results.
+
+    Loads an ONNX model via onnxruntime and performs inference on incoming
+    AudioBuffers, storing outputs under audio.embeddings[embedding_name].
+    """
     def __init__(
         self,
         model_path,
         use_cuda=True,
         embedding_name="perch_v2",
     ):
+        """Initialize the embeddings runtime.
+
+        Args:
+            model_path (str): Path to the ONNX model file; must exist.
+            use_cuda (bool): Prefer CUDAExecutionProvider if available.
+            embedding_name (str): Key name under which outputs are stored on
+                audio.embeddings.
+
+        Raises:
+            FileNotFoundError: If model_path does not exist.
+            ValueError: If the model has an unexpected number of inputs.
+        """
         super().__init__()
 
         self.embedding_name = embedding_name
         self.model_path = model_path
-        
+
         model_path_object = Path(model_path)
 
         if not model_path_object.is_file():
@@ -64,11 +81,28 @@ class EmbeddingsCreator(PipelineLink):
         self.input_type = model_inputs[0].type
     
     def configuration_parameters(self) -> dict[str, any]:
+        """Return configuration parameters affecting the embedding output.
+
+        Returns:
+            dict: Includes 'model_path' (note: changing the path forces different pipeline hash).
+        """
         return {
-            "model_path": self.model_path, #beware, changes in model path will force new embeddings! 
+            "model_path": self.model_path, #beware, changes in model path will force new embeddings!
         }
     
     def next_audio(self, audio):
+        """Run the ONNX model to compute embeddings and attach them to audio.
+
+        If the embedding is already present, the buffer is forwarded unchanged.
+
+        Args:
+            audio (AudioBuffer): Buffer of mono audio at the expected sample rate.
+
+        Raises:
+            TypeError: If audio is not an AudioBuffer.
+            ValueError: For empty waveforms or channel count mismatches.
+            RuntimeError: If the ONNX model returns no outputs.
+        """
         if not isinstance(audio, AudioBuffer):
             raise TypeError(
                 "EmbeddingsCreator expects an AudioBuffer"
@@ -107,7 +141,7 @@ class EmbeddingsCreator(PipelineLink):
 
         if self.callback is not None:
             self.callback.next_audio(audio)
-            
+
     def _prepare_input(
         self,
         audio: AudioBuffer,
