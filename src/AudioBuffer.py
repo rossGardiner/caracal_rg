@@ -36,7 +36,9 @@ class AudioBuffer:
     left_context_samples: int = 0
     right_context_samples: int = 0
     
-    embeddings = {}
+    embeddings: dict = field(
+        default_factory=dict
+    )
     
     # a buffers id is a hash of its idenfiying properties
     id: str = field(
