@@ -1,14 +1,9 @@
-name: Build and Deploy Docs
+name: Build Docs
 
 on:
   push:
     branches: [dev]
   workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
 
 jobs:
   docs:
@@ -25,23 +20,8 @@ jobs:
       - name: Build docs
         run: doxygen Doxyfile
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
+          name: doxygen-html
           path: html
-
-  deploy:
-    needs: docs
-    runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
