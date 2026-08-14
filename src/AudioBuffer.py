@@ -12,7 +12,7 @@ from hashlib import sha256
 from src.AudioPacket import AudioPacket
 
 
-def _make_id_of_audio_buffer(packet, sample_rate, start_offset_s, valid_samples):
+def _make_id_of_audio_buffer(sample_rate, start_offset_s, valid_samples):
     identity_string = f"{sample_rate}, + {start_offset_s} + {valid_samples}"
     return sha256(identity_string.encode("utf-8")).hexdigest()
     
