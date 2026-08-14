@@ -13,7 +13,7 @@ from src.AudioPacket import AudioPacket
 
 
 def _make_id_of_audio_buffer(packet, sample_rate, start_offset_s, valid_samples):
-    identity_string = f"{packet.id} + {sample_rate}, + {start_offset_s} + {valid_samples}"
+    identity_string = f"{sample_rate}, + {start_offset_s} + {valid_samples}"
     return sha256(identity_string.encode("utf-8")).hexdigest()
     
 @dataclass
@@ -45,7 +45,6 @@ class AudioBuffer:
 
     def __post_init__(self):
         self.id = _make_id_of_audio_buffer(
-            self.packet,
             self.sample_rate,
             self.start_offset_s,
             self.valid_samples,
