@@ -36,4 +36,9 @@ jobs:
         run: |
           export PYTHONPATH=.
           python test/import_smoke.py
+      
+      - name: Run unit tests
+        run: | 
+          export PYTHONPATH=.
+          pytest tests/test*.py
 
