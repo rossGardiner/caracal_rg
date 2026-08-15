@@ -33,5 +33,10 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Import smoke test
-        run: python -c "import src"
+        run: |
+          python -c "from src.AudioBuffer import AudioBuffer"
+          python -c "from src.HighPassFilter import HighPassFilter"
+          python -c "from src.Resampler import Resampler"
+          python -c "from src.EmbeddingsCreator import EmbeddingsCreator"
+          python -c "from src.EmbeddingCache import EmbeddingCache"
 
