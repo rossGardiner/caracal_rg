@@ -39,4 +39,6 @@ jobs:
           python -c "from src.Resampler import Resampler"
           python -c "from src.EmbeddingsCreator import EmbeddingsCreator"
           python -c "from src.EmbeddingCache import EmbeddingCache"
+          python -c "from src.CaracalStreamer import CaracalStreamer" 
+          python -c "from src.AudioBufferLoader import AudioBufferLoader" 
 
