@@ -40,7 +40,5 @@ jobs:
           python test/import_smoke.py
       
       - name: Run unit tests
-        run: | 
-       
-          pytest test/test*.py
+        run: python -m pytest test
 
