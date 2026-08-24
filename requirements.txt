@@ -2,4 +2,5 @@ numpy
 librosa
 onnxruntime
 pytest
-
+PySide6
+pyqtgraph
