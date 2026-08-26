@@ -1,3 +1,5 @@
+import sys 
+import threading
 
 from src.AudioPacket import AudioPacket
 ap = AudioPacket()
@@ -38,6 +40,19 @@ ecs = EmbeddingCacheSaver(cache=ecache, embeddings_creator=ec)
 from src.SpeedometerLink import SpeedometerLink
 sl = SpeedometerLink()
 
+from PySide6.QtWidgets import QApplication
+app = QApplication(sys.argv)
+
+from src.GuiPipelineLink import GuiPipelineLink
+gpl = GuiPipelineLink()
+
+from src.Visualiser import Visualiser
+window = Visualiser()
+
+gpl.register_gui(
+    window.update_data
+)
+
 cs.register_callback(abl)
 
 abl.register_callback(hps)
@@ -51,11 +66,20 @@ sl.register_callback(rs)
 rs.register_callback(ecl)
 ecl.register_callback(ec)
 ec.register_callback(ecs)
-
+ecs.register_callback(gpl)
 
 #ecs.register_callback(tp)
 
 print(ecs.get_config_json())
+
+window.show()
 #exit(0)
-cs.stream()
+pipeline_thread = threading.Thread(
+    target=cs.stream,
+    daemon=True,
+)
+
+pipeline_thread.start()
+
+sys.exit(app.exec())
 
