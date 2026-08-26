@@ -2,7 +2,9 @@ name: Build Docs
 
 on:
   push:
-    branches: [dev]
+    branches: 
+       - dev
+       - docs-deploy
   workflow_dispatch:
 
 jobs:
