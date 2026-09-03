@@ -7,6 +7,7 @@
 
 import os
 from glob import glob
+from hashlib import sha256
 
 from caracal import SyslogParser
 
@@ -146,7 +147,7 @@ class CaracalStreamer(PipelineLink):
             relative_paths
         )
 
-        return hashlib.sha256(
+        return sha256(
             identity.encode("utf-8")
         ).hexdigest()
             
