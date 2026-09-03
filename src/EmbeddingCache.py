@@ -206,6 +206,110 @@ class EmbeddingCache:
             / f"{chunk_index:08d}.npz"
         )
     
+    def list_embeddings(
+        self,
+        recording_id,
+        pipeline_hash,
+        embedding_name,
+    ):
+        """
+        Return all cached embeddings for one recording.
+
+        Results are ordered by chunk_index.
+        """
+
+        recording_directory = (
+            self.root_directory
+            / self._safe_filename(pipeline_hash)
+            / self._safe_filename(embedding_name)
+            / self._safe_filename(str(recording_id))
+        )
+
+        if not recording_directory.is_dir():
+            return []
+
+        results = []
+
+        for path in recording_directory.glob("*.npz"):
+
+            with np.load(
+                path,
+                allow_pickle=False,
+            ) as saved:
+
+                chunk_index = int(
+                    saved["chunk_index"].item()
+                )
+
+                stored_recording_id = (
+                    saved["recording_id"].item()
+                )
+
+                stored_pipeline_hash = (
+                    saved["pipeline_hash"].item()
+                )
+
+                stored_embedding_name = (
+                    saved["embedding_name"].item()
+                )
+
+                values = saved["values"]
+
+                metadata = json.loads(
+                    saved["metadata"].item()
+                )
+
+            #
+            # Validate the cache file belongs where we found it.
+            #
+            if stored_recording_id != recording_id:
+                raise ValueError(
+                    f"Cached recording_id mismatch at {path}"
+                )
+
+            if stored_pipeline_hash != pipeline_hash:
+                raise ValueError(
+                    f"Cached pipeline_hash mismatch at {path}"
+                )
+
+            if stored_embedding_name != embedding_name:
+                raise ValueError(
+                    f"Cached embedding_name mismatch at {path}"
+                )
+
+            results.append(
+                {
+                    "recording_id": recording_id,
+                    "chunk_index": chunk_index,
+                    "values": values,
+                    "pipeline_hash": pipeline_hash,
+                    "embedding_name": embedding_name,
+                    "metadata": metadata,
+                }
+            )
+
+        results.sort(
+            key=lambda item: item["chunk_index"]
+        )
+
+        return results
+    
+    def has_embedding(
+        self,
+        recording_id,
+        chunk_index,
+        pipeline_hash,
+        embedding_name,
+    ):
+        path = self._get_path(
+            recording_id=recording_id,
+            chunk_index=chunk_index,
+            pipeline_hash=pipeline_hash,
+            embedding_name=embedding_name,
+        )
+
+        return path.is_file()
+    
     @staticmethod
     def _safe_filename(value):
         allowed = {
