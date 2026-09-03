@@ -112,6 +112,7 @@ class CaracalStreamer(PipelineLink):
             is_whole=True,
             lat=session.header.stats.median_GPS_lat,
             lon=session.header.stats.median_GPS_lon,
+            recording_id=self._recording_id(audio_paths)
             misc_metadata={
                 "source": "CARACAL",
                 "syslog_file": str(syslog_file),
@@ -129,7 +130,26 @@ class CaracalStreamer(PipelineLink):
         Returns False if sysDuration <= 0.0 or num_files <= 0.
         """
         return header.sysDuration > 0.0 and header.stats.num_files > 0 
-        
+
+
+
+    def _recording_id(self, audio_paths):
+        relative_paths = [
+            os.path.relpath(
+                path,
+                self.rootpath,
+            )
+            for path in audio_paths
+        ]
+
+        identity = "\n".join(
+            relative_paths
+        )
+
+        return hashlib.sha256(
+            identity.encode("utf-8")
+        ).hexdigest()
+            
         
         
     
