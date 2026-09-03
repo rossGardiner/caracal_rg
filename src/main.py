@@ -41,7 +41,11 @@ from src.SpeedometerLink import SpeedometerLink
 sl = SpeedometerLink()
 
 from PySide6.QtWidgets import QApplication
+from src.QtSignalHandler import QtSignalHandler
+
 app = QApplication(sys.argv)
+signal_handler = QtSignalHandler(app)
+
 
 
 
@@ -66,7 +70,7 @@ sl.register_callback(rs)
 rs.register_callback(ecl)
 ecl.register_callback(ec)
 ec.register_callback(ecs)
-ecs.register_callback(gpl)
+#ecs.register_callback(gpl)
 
 #ecs.register_callback(tp)
 
