@@ -43,15 +43,15 @@ sl = SpeedometerLink()
 from PySide6.QtWidgets import QApplication
 app = QApplication(sys.argv)
 
-from src.GuiPipelineLink import GuiPipelineLink
-gpl = GuiPipelineLink()
+
 
 from src.Visualiser import Visualiser
 window = Visualiser()
 
-gpl.register_gui(
-    window.update_data
-)
+
+from src.GuiPipelineLink import GuiPipelineLink
+gpl = GuiPipelineLink(visualiser=window)
+
 
 cs.register_callback(abl)
 
