@@ -73,8 +73,21 @@ class EmbeddingCacheLoader(PipelineLink):
             self.embeddings_creator.embedding_name
         )
 
+        if audio.recording_id is None:
+            raise ValueError(
+                "Cannot load a cached embedding for an "
+                "AudioBuffer without recording_id"
+            )
+
+        if audio.chunk_index is None:
+            raise ValueError(
+                "Cannot load a cached embedding for an "
+                "AudioBuffer without chunk_index"
+            )
+
         cached = self.cache.load(
-            audio_id=audio.id,
+            recording_id=audio.recording_id,
+            chunk_index=audio.chunk_index,
             pipeline_hash=pipeline_hash,
             embedding_name=embedding_name,
         )
