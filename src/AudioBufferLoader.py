@@ -1,68 +1,105 @@
-#AudioBufferLoader
-#A pipeline link which takes an AudioPacket and produces AudioBuffers which refernce that packet, buffer sizes can be configured approprirately.
-# treats the ordered WAV files referenced by an `AudioPacket` as one continuous logical audio stream. It loads audio into fixed-size, non-overlapping buffers and carries any partially filled buffer across file boundaries, taking the remaining samples from the beginning of the next WAV. Per-file read positions are tracked independently, while the accumulated buffer contents and emitted sample offset persist across files. The final buffer may be shorter than the configured size and is emitted without padding.
-
-
-import os
+# AudioBufferLoader
+# A pipeline link which takes an AudioPacket and produces AudioBuffers
+# which reference that packet. Buffer sizes can be configured appropriately.
+#
+# Treats the ordered WAV files referenced by an AudioPacket as one continuous
+# logical audio stream. It loads audio into fixed-size, non-overlapping buffers
+# and carries any partially filled buffer across file boundaries, taking the
+# remaining samples from the beginning of the next WAV.
+#
+# Per-file read positions are tracked independently, while the accumulated
+# buffer contents and emitted sample offset persist across files.
+# The final buffer may be shorter than the configured size and is emitted
+# without padding.
 
 import numpy as np
-import soundfile as sf
-
-try:
-    from caracal.datagetter import DataGetter
-except ImportError:
-    print("Warning: caracal library not found. Continuing assuming input data are not in caracal format.")
 
 from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
+from src.AudioReader import AudioReader
 from src.PipelineLink import PipelineLink
 
-#import line_profiler
 
 class AudioBufferLoader(PipelineLink):
-    """Pipeline link that loads fixed-size AudioBuffer objects from audio files.
+    """
+    Pipeline link that loads fixed-size AudioBuffer objects from audio files.
 
     Treats the list of WAV files in an AudioPacket as a continuous logical
     stream and emits non-overlapping AudioBuffers of a configured duration.
+
     Partially-filled buffers at file boundaries are carried forward across
     files; the final buffer may be shorter than the configured size.
     """
-    def __init__ (self, buffer_seconds: float = 5.0, is_caracal: bool = True):
-        """Create an AudioBufferLoader.
+
+    def __init__(
+        self,
+        buffer_seconds: float = 5.0,
+        is_caracal: bool = True,
+    ):
+        """
+        Create an AudioBufferLoader.
 
         Args:
-            buffer_seconds (float): Desired buffer length in seconds; must be > 0.
-            is_caracal (bool): If True, attempt to use caracal.DataGetter where available.
-        """
-        super().__init__()
-        if buffer_seconds <= 0:
-            raise ValueError("buffer_seconds must be greater than zero")
-        self.buffer_seconds = float(buffer_seconds)
+            buffer_seconds:
+                Desired buffer length in seconds; must be > 0.
 
+            is_caracal:
+                If True, attempt to use caracal.DataGetter where available.
+        """
+
+        super().__init__()
+
+        if buffer_seconds <= 0:
+            raise ValueError(
+                "buffer_seconds must be greater than zero"
+            )
+
+        self.buffer_seconds = float(
+            buffer_seconds
+        )
+        
         self.is_caracal = is_caracal
 
-    def configuration_parameters(self) -> dict[str, any]:
-        """Return configuration parameters affecting emitted AudioBuffers.
+        self.reader = AudioReader(
+            is_caracal=is_caracal
+        )
 
-        Returns:
-            dict: Keys include 'buffer_seconds' and 'is_caracal'.
+    # ======================================================
+    # Configuration
+    # ======================================================
+
+    def configuration_parameters(
+        self,
+    ) -> dict[str, any]:
         """
+        Return configuration parameters affecting emitted AudioBuffers.
+        """
+
         return {
             "buffer_seconds": self.buffer_seconds,
-            "is_caracal": self.is_caracal
+            "is_caracal": self.is_caracal,
         }
 
-    
-    def next_audio(self, packet: AudioPacket) -> None:
-        """Convert an AudioPacket (list of files) into one-or-more AudioBuffer items.
+    # ======================================================
+    # Pipeline input
+    # ======================================================
+
+    def next_audio(
+        self,
+        packet: AudioPacket,
+    ) -> None:
+        """
+        Convert an AudioPacket into one or more AudioBuffers.
 
         Args:
-            packet (AudioPacket): Packet describing audio files and offsets.
-
-        Raises:
-            TypeError: If packet is not an AudioPacket.
+            packet:
+                Packet describing audio files and offsets.
         """
-        if not isinstance(packet, AudioPacket):
+
+        if not isinstance(
+            packet,
+            AudioPacket,
+        ):
             raise TypeError(
                 "AudioBufferLoader expects an AudioPacket"
             )
@@ -70,10 +107,23 @@ class AudioBufferLoader(PipelineLink):
         if self.callback is None:
             return
 
-        self.load_buffers(packet)
-    
-    #@line_profiler.profile
+        self.load_buffers(
+            packet
+        )
+
+    # ======================================================
+    # Buffer loading
+    # ======================================================
+
     def load_buffers(self, packet: AudioPacket) -> None:
+        """
+        Emit canonical fixed-size AudioBuffers from an AudioPacket.
+
+        AudioBufferLoader owns chunking.
+
+        AudioReader owns physical audio access.
+        """
+
         if not packet.audio_paths:
             raise ValueError(
                 f"AudioPacket {packet.id} has no audio paths"
@@ -84,250 +134,195 @@ class AudioBufferLoader(PipelineLink):
                 f"AudioPacket {packet.id} offset cannot be negative"
             )
 
-        if packet.duration is not None and packet.duration <= 0:
+        if (
+            packet.duration is not None
+            and packet.duration <= 0
+        ):
             raise ValueError(
                 f"AudioPacket {packet.id} duration must be positive"
             )
 
-        sample_rate: int | None = None
-        buffer_samples: int | None = None
-        expected_channels: int | None = None
+        # ======================================================
+        # Logical recording information
+        # ======================================================
 
-        # Parts of the current output buffer. These may come from
-        # more than one WAV file.
-        buffer_parts: list[np.ndarray] = []
-        samples_in_buffer = 0
+        (
+            sample_rate,
+            total_samples,
+        ) = self.reader.get_info(
+            packet
+        )
 
-        # Position of the next emitted buffer relative to the selected
-        # region represented by this packet.
-        emitted_samples = 0
+        buffer_samples = max(
+            1,
+            round(
+                self.buffer_seconds
+                * sample_rate
+            ),
+        )
 
-        # Audio before packet.offset must be skipped.
-        samples_to_skip: int | None = None
+        # ======================================================
+        # Packet start
+        # ======================================================
 
-        # None means load until the source files end.
-        samples_remaining: int | None = None
+        start_sample = round(
+            packet.offset
+            * sample_rate
+        )
 
-        for audio_path in packet.audio_paths:
-            if not os.path.isfile(audio_path):
-                raise FileNotFoundError(
-                    f"Audio file does not exist: {audio_path}"
-                )
-
-            file_info = sf.info(audio_path)
-            file_sample_rate = int(file_info.samplerate)
-            file_duration_s = (
-                file_info.frames / file_info.samplerate
-            )
-            
-            
-
-            if sample_rate is None:
-                sample_rate = file_sample_rate
-
-                buffer_samples = max(
-                    1,
-                    round(
-                        self.buffer_seconds * sample_rate
-                    ),
-                )
-
-                samples_to_skip = round(
-                    packet.offset * sample_rate
-                )
-
-                if packet.duration is not None:
-                    samples_remaining = round(
-                        packet.duration * sample_rate
-                    )
-
-            elif file_sample_rate != sample_rate:
-                raise ValueError(
-                    f"Sample-rate change at {audio_path}: "
-                    f"expected {sample_rate} Hz, "
-                    f"found {file_sample_rate} Hz"
-                )
-
-            # DataGetter requires duration in seconds.
-            if self.is_caracal:
-                sr, audio = DataGetter.load_wav(
-                    audio_path,
-                    duration=file_duration_s,
-                )
-            else:
-                audio, sr = sf.read(
-                    audio_path,
-                    dtype="float32",
-                    always_2d=True,
-                )
-
-            if int(sr) != sample_rate:
-                raise ValueError(
-                    f"Loaded sample rate for {audio_path} was "
-                    f"{sr} Hz; expected {sample_rate} Hz"
-                )
-
-            audio = np.asarray(audio)
-
-            # Standard internal shape: (samples, channels).
-            if audio.ndim == 1:
-                audio = audio[:, np.newaxis]
-
-            if audio.ndim != 2:
-                raise ValueError(
-                    f"Unexpected audio shape for {audio_path}: "
-                    f"{audio.shape}"
-                )
-
-            if expected_channels is None:
-                expected_channels = audio.shape[1]
-            elif audio.shape[1] != expected_channels:
-                raise ValueError(
-                    f"Channel-count change at {audio_path}: "
-                    f"expected {expected_channels}, "
-                    f"found {audio.shape[1]}"
-                )
-
-            # Skip source audio before packet.offset.
-            if samples_to_skip is not None and samples_to_skip > 0:
-                skipped_samples = min(
-                    samples_to_skip,
-                    len(audio),
-                )
-
-                audio = audio[skipped_samples:]
-                samples_to_skip -= skipped_samples
-
-                # The complete file was before the selected region.
-                if len(audio) == 0:
-                    continue
-
-            position = 0
-
-            while position < len(audio):
-                if (
-                    samples_remaining is not None
-                    and samples_remaining <= 0
-                ):
-                    break
-
-                assert buffer_samples is not None
-
-                samples_needed = (
-                    buffer_samples - samples_in_buffer
-                )
-
-                samples_available = (
-                    len(audio) - position
-                )
-
-                samples_to_take = min(
-                    samples_needed,
-                    samples_available,
-                )
-
-                if samples_remaining is not None:
-                    samples_to_take = min(
-                        samples_to_take,
-                        samples_remaining,
-                    )
-
-                if samples_to_take <= 0:
-                    break
-
-                part = audio[
-                    position:
-                    position + samples_to_take
-                ]
-
-                buffer_parts.append(part)
-
-                position += samples_to_take
-                samples_in_buffer += samples_to_take
-
-                if samples_remaining is not None:
-                    samples_remaining -= samples_to_take
-
-                # Emit once the requested buffer size has been reached.
-                if samples_in_buffer == buffer_samples:
-                    waveform = self._join_parts(
-                        buffer_parts
-                    )
-
-                    audio_buffer = AudioBuffer(
-                        packet=packet,
-                        waveform=waveform,
-                        sample_rate=sample_rate,
-                        start_offset_s=(
-                            emitted_samples / sample_rate
-                        ),
-                        valid_samples=samples_in_buffer,
-                        left_context_samples=0,
-                        right_context_samples=0,
-                    )
-
-                    self.callback.next_audio(
-                        audio_buffer
-                    )
-
-                    emitted_samples += samples_in_buffer
-                    buffer_parts = []
-                    samples_in_buffer = 0
-
-            if (
-                samples_remaining is not None
-                and samples_remaining <= 0
-            ):
-                break
-
-        if samples_to_skip is not None and samples_to_skip > 0:
+        if start_sample > total_samples:
             raise ValueError(
                 f"AudioPacket {packet.id} offset lies beyond "
                 "the available audio"
             )
 
-        # Emit the final partial buffer without padding.
-        if samples_in_buffer > 0:
-            assert sample_rate is not None
+        #
+        # Starting exactly at EOF simply produces no buffers.
+        #
+        if start_sample == total_samples:
+            return
 
-            waveform = self._join_parts(
-                buffer_parts
+        # ======================================================
+        # Canonical chunk index
+        # ======================================================
+
+        chunk_position = (
+            packet.offset
+            / self.buffer_seconds
+        )
+
+        if not np.isclose(
+            chunk_position,
+            round(
+                chunk_position
+            ),
+        ):
+            raise ValueError(
+                f"AudioPacket {packet.id} offset "
+                f"{packet.offset}s is not aligned to "
+                f"the {self.buffer_seconds}s "
+                f"canonical chunk grid"
             )
+
+        chunk_index = int(
+            round(
+                chunk_position
+            )
+        )
+
+        # ======================================================
+        # Number of samples requested by this packet
+        # ======================================================
+
+        available_samples = (
+            total_samples
+            - start_sample
+        )
+
+        if packet.duration is None:
+
+            requested_samples = (
+                available_samples
+            )
+
+        else:
+
+            requested_samples = min(
+                round(
+                    packet.duration
+                    * sample_rate
+                ),
+                available_samples,
+            )
+
+        # ======================================================
+        # Emit canonical buffers
+        # ======================================================
+
+        emitted_samples = 0
+
+        while (
+            emitted_samples
+            < requested_samples
+        ):
+
+            samples_remaining = (
+                requested_samples
+                - emitted_samples
+            )
+
+            samples_to_read = min(
+                buffer_samples,
+                samples_remaining,
+            )
+
+            waveform, read_sample_rate = (
+                self.reader.read_samples(
+                    packet=packet,
+                    start_sample=(
+                        start_sample
+                        + emitted_samples
+                    ),
+                    sample_count=samples_to_read,
+                )
+            )
+
+            if (
+                read_sample_rate
+                != sample_rate
+            ):
+                raise ValueError(
+                    "AudioReader returned an unexpected "
+                    "sample rate"
+                )
+
+            valid_samples = len(
+                waveform
+            )
+
+            if valid_samples == 0:
+                break
 
             audio_buffer = AudioBuffer(
                 packet=packet,
                 waveform=waveform,
                 sample_rate=sample_rate,
+
+                #
+                # Keep the existing packet-relative offset
+                # semantics for this commit.
+                #
                 start_offset_s=(
-                    emitted_samples / sample_rate
+                    emitted_samples
+                    / sample_rate
                 ),
-                valid_samples=samples_in_buffer,
+
+                valid_samples=(
+                    valid_samples
+                ),
+
                 left_context_samples=0,
                 right_context_samples=0,
+
+                chunk_index=chunk_index,
             )
 
             self.callback.next_audio(
                 audio_buffer
             )
 
-    @staticmethod
-    def _join_parts(
-        parts: list[np.ndarray],
-    ) -> np.ndarray:
-        if not parts:
-            raise ValueError(
-                "Cannot create an AudioBuffer from no audio"
+            emitted_samples += (
+                valid_samples
             )
 
-        if len(parts) == 1:
-            return parts[0]
+            chunk_index += 1
 
-        return np.concatenate(
-            parts,
-            axis=0,
-        )
-
-        
-        
-        
-
+            #
+            # A short read means the physical recording ended.
+            #
+            if (
+                valid_samples
+                < samples_to_read
+            ):
+                break
+    

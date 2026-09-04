@@ -47,6 +47,8 @@ class AudioPacket:
 
     # Misc metadata, a rough place to store other metadata associated with this AudioPacket
     misc_metadata : dict = field(default_factory=dict)
+    
+    recording_id: str | None = None
 
 
 

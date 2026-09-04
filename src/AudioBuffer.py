@@ -51,16 +51,36 @@ class AudioBuffer:
         default_factory=dict
     )
 
+    chunk_index: int | None = None
+
     # a buffers id is a hash of its idenfiying properties
     id: str = field(
         init=False
     )
-
+    
     def __post_init__(self):
         self.id = _make_id_of_audio_buffer(
             self.sample_rate,
             self.start_offset_s,
             self.valid_samples,
         )
+    
+    @property
+    def recording_id(self):
+        if self.packet is None:
+            return None
 
+        return self.packet.recording_id
+    
+    @property
+    def chunk_key(self):
+        if self.recording_id is None:
+            return None
 
+        if self.chunk_index is None:
+            return None
+
+        return (
+            self.recording_id,
+            self.chunk_index,
+        )

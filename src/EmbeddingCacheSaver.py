@@ -85,8 +85,21 @@ class EmbeddingCacheSaver(PipelineLink):
             False,
         ):
 
+            if audio.recording_id is None:
+                raise ValueError(
+                    "Cannot cache an embedding for an "
+                    "AudioBuffer without recording_id"
+                )
+
+            if audio.chunk_index is None:
+                raise ValueError(
+                    "Cannot cache an embedding for an "
+                    "AudioBuffer without chunk_index"
+                )
+
             self.cache.save(
-                audio_id=audio.id,
+                recording_id=audio.recording_id,
+                chunk_index=audio.chunk_index,
                 pipeline_hash=embedding["pipeline_hash"],
                 embedding_name=embedding_name,
                 values=embedding["values"],
