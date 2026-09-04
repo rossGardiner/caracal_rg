@@ -13,9 +13,9 @@ from caracal import SyslogParser
 
 from src.PipelineLink import PipelineLink
 from src.AudioPacket import AudioPacket
+from src.AudioPacketSource import AudioPacketSource
 
-
-class CaracalStreamer(PipelineLink):
+class CaracalStreamer(PipelineLink, AudioPacketSource):
     """Pipeline source that discovers CARACAL session syslog files and emits AudioPackets.
 
     The streamer finds syslog.txt files under a root directory and converts each
@@ -75,18 +75,46 @@ class CaracalStreamer(PipelineLink):
                 "No syslogs found! Are you sure this is a valid CARACAL data directory?"
             )
             
-    def stream(self) -> None:
+    def get_audio_packets(self) -> list[AudioPacket]:
+        """
+        Parse the registered CARACAL sessions and return them as
+        generic AudioPacket objects.
+        """
+
+        packets: list[AudioPacket] = []
+
         for syslog_file in self.syslog_files:
-            parser = SyslogParser(syslog_file)
+            parser = SyslogParser(
+                syslog_file
+            )
+
             container = parser.process()
 
-            for session_idx, session in enumerate(container.sessions):
+            for session_idx, session in enumerate(
+                container.sessions
+            ):
                 header = session.header
 
-                if not self.syslog_session_header_ok(header):
-                    sys_duration = getattr(header, "sysDuration", None)
-                    stats = getattr(header, "stats", None)
-                    num_files = getattr(stats, "num_files", None)
+                if not self.syslog_session_header_ok(
+                    header
+                ):
+                    sys_duration = getattr(
+                        header,
+                        "sysDuration",
+                        None,
+                    )
+
+                    stats = getattr(
+                        header,
+                        "stats",
+                        None,
+                    )
+
+                    num_files = getattr(
+                        stats,
+                        "num_files",
+                        None,
+                    )
 
                     print(
                         f"WARNING: Skipping invalid CARACAL session "
@@ -94,10 +122,32 @@ class CaracalStreamer(PipelineLink):
                         f"sysDuration={sys_duration}, "
                         f"num_files={num_files}"
                     )
+
                     continue
 
-                packet = self.build_audio_packet_from_session(session, syslog_file)
-                self.next_audio(packet)
+                packet = (
+                    self.build_audio_packet_from_session(
+                        session,
+                        syslog_file,
+                    )
+                )
+
+                packets.append(
+                    packet
+                )
+
+        return packets
+
+
+    def stream(self) -> None:
+        """
+        Emit each available AudioPacket into the pipeline.
+        """
+
+        for packet in self.get_audio_packets():
+            self.next_audio(
+                packet
+            )
                 
     def build_audio_packet_from_session(self, session, syslog_file: str) -> AudioPacket:
 
