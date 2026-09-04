@@ -164,6 +164,9 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
             lat=session.header.stats.median_GPS_lat,
             lon=session.header.stats.median_GPS_lon,
             recording_id=self._recording_id(audio_paths),
+            display_name=(
+                f"{session.header.headerID.deviceID} "
+            ),
             misc_metadata={
                 "source": "CARACAL",
                 "syslog_file": str(syslog_file),

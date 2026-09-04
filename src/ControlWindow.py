@@ -282,8 +282,13 @@ class ControlWindow(QMainWindow):
         for index, packet in enumerate(
             self.audio_packets
         ):
+            label = (
+                packet.display_name
+                or f"Recording {index + 1}"
+            )
+
             self.recording_selector.addItem(
-                f"Recording {index + 1}",
+                label,
                 userData=index,
             )
 
