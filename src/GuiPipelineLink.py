@@ -1,3 +1,8 @@
+''' GuiPipelineLink
+This is a pipeline link which is not config related. 
+This link provides an interface with Qt. 
+'''
+
 from PySide6.QtCore import (
     QObject,
     Signal,
@@ -26,7 +31,7 @@ class GuiPipelineLink(PipelineLink):
 
     def __init__(
         self,
-        visualiser,
+        control_window,
         buffer_count=10,
     ):
         super().__init__()
@@ -36,7 +41,7 @@ class GuiPipelineLink(PipelineLink):
                 "buffer_count must be greater than zero"
             )
 
-        self.visualiser = visualiser
+        self.control_window = control_window
         self.buffer_count = buffer_count
 
         self.buffers = []
@@ -55,14 +60,14 @@ class GuiPipelineLink(PipelineLink):
         self._signals = _GuiSignals()
 
         self._signals.batch_ready.connect(
-            self.visualiser.update_data,
+            self.control_window.update_data,
             Qt.ConnectionType.QueuedConnection,
         )
 
         #
-        # The visualiser emits this when Next is pressed.
+        # The control_window emits this when Next is pressed.
         #
-        self.visualiser.next_requested.connect(
+        self.control_window.next_requested.connect(
             self.continue_pipeline
         )
 

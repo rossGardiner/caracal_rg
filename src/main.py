@@ -49,12 +49,16 @@ signal_handler = QtSignalHandler(app)
 
 
 
-from src.Visualiser import Visualiser
-window = Visualiser()
 
+
+from src.ControlWindow import ControlWindow
+
+window = ControlWindow(
+    embedding_name=ec.embedding_name
+)
 
 from src.GuiPipelineLink import GuiPipelineLink
-gpl = GuiPipelineLink(visualiser=window)
+gpl = GuiPipelineLink(control_window=window)
 
 
 cs.register_callback(abl)
@@ -70,7 +74,7 @@ sl.register_callback(rs)
 rs.register_callback(ecl)
 ecl.register_callback(ec)
 ec.register_callback(ecs)
-#ecs.register_callback(gpl)
+ecs.register_callback(gpl)
 
 #ecs.register_callback(tp)
 
