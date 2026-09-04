@@ -35,6 +35,8 @@ from PySide6.QtMultimedia import (
 )
 
 from src.AudioPacketSource import AudioPacketSource
+from src.AudioReader import AudioReader
+from src.AudioBuffer import AudioBuffer
 
 class ControlWindow(QMainWindow):
     """
@@ -58,7 +60,7 @@ class ControlWindow(QMainWindow):
 
     next_requested = Signal()
 
-    def __init__(self, audio_packet_source: AudioPacketSource, chunk_duration_s: float = 5.0, embedding_name="perch_v2"):
+    def __init__(self, audio_packet_source: AudioPacketSource, audio_reader: AudioReader, chunk_duration_s: float = 5.0, embedding_name="perch_v2"):
         super().__init__()
 
         # ==================================================
@@ -88,7 +90,8 @@ class ControlWindow(QMainWindow):
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
         )
-
+        self.audio_reader = audio_reader
+        
         self.current_audio_packet = None
         self.current_chunk_index = 0
         self.current_num_chunks = 0
@@ -940,6 +943,7 @@ class ControlWindow(QMainWindow):
         )
 
         self._update_chunk_label()
+        self._load_selected_chunk()
     
     def _chunk_selected(
         self,
@@ -957,7 +961,56 @@ class ControlWindow(QMainWindow):
         )
 
         self._update_chunk_label()
-        
+        self._load_selected_chunk()
+    
+    def _load_selected_chunk(
+        self,
+    ):
+        if self.current_audio_packet is None:
+            return
+
+        self.stop_audio()
+
+        start_s = (
+            self.current_chunk_index
+            * self.chunk_duration_s
+        )
+
+        waveform, sample_rate = (
+            self.audio_reader.read(
+                packet=self.current_audio_packet,
+                start_s=start_s,
+                duration_s=self.chunk_duration_s,
+            )
+        )
+
+        audio_buffer = AudioBuffer(
+            packet=self.current_audio_packet,
+            waveform=waveform,
+            sample_rate=sample_rate,
+            start_offset_s=start_s,
+            valid_samples=len(waveform),
+            left_context_samples=0,
+            right_context_samples=0,
+            chunk_index=self.current_chunk_index,
+        )
+
+        self.current_buffers = [
+            audio_buffer
+        ]
+
+        self.spectrogram.set_buffers(
+            self.current_buffers
+        )
+
+        self.play_button.setEnabled(
+            True
+        )
+
+        self.stop_button.setEnabled(
+            True
+        )
+    
     def _update_chunk_label(
         self,
     ):

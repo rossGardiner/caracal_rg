@@ -64,10 +64,17 @@ from src.QtSignalHandler import QtSignalHandler
 app = QApplication(sys.argv)
 signal_handler = QtSignalHandler(app)
 
+from src.AudioReader import AudioReader
+
+ar = AudioReader(
+    is_caracal=True
+)
+
 from src.ControlWindow import ControlWindow
 
 window = ControlWindow(
     audio_packet_source=cs,
+    audio_reader=ar,
     chunk_duration_s=CHUNK_DURATION_S,
     embedding_name=ec.embedding_name,
 )
