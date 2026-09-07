@@ -51,9 +51,9 @@ signal_handler = QtSignalHandler(app)
 
 
 
-from src.ControlWindow import ControlWindow
+from src.Visualiser import Visualiser
 
-window = ControlWindow(
+window = Visualiser(
     embedding_name=ec.embedding_name
 )
 
