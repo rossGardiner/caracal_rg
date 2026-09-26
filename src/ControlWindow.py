@@ -1,4 +1,3 @@
-import math
 import numpy as np
 
 from PySide6.QtCore import (
@@ -24,6 +23,7 @@ from PySide6.QtMultimedia import (
 from src.AudioPacketSource import AudioPacketSource
 from src.AudioReader import AudioReader
 from src.BrowsingAudioLoader import BrowsingAudioLoader
+from src.CanonicalChunkGrid import CanonicalChunkGrid
 from src.BrowsingView import BrowsingView
 from src.ProcessedView import ProcessedView
 from src.SpectrogramWorker import SpectrogramWorker
@@ -53,7 +53,7 @@ class ControlWindow(QMainWindow):
         self,
         audio_packet_source: AudioPacketSource,
         audio_reader: AudioReader,
-        chunk_duration_s: float = 5.0,
+        chunk_grid: CanonicalChunkGrid,
         embedding_name="perch_v2",
     ):
         super().__init__()
@@ -73,18 +73,19 @@ class ControlWindow(QMainWindow):
 
         self.browsing_buffers = []
 
-        if chunk_duration_s <= 0:
-            raise ValueError(
-                "chunk_duration_s must be greater than zero"
+        if not isinstance(
+            chunk_grid,
+            CanonicalChunkGrid,
+        ):
+            raise TypeError(
+                "chunk_grid must be a CanonicalChunkGrid"
             )
 
         self.audio_packet_source = (
             audio_packet_source
         )
 
-        self.chunk_duration_s = float(
-            chunk_duration_s
-        )
+        self.chunk_grid = chunk_grid
 
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
@@ -815,9 +816,10 @@ class ControlWindow(QMainWindow):
                 "Selected AudioPacket has no duration"
             )
 
-        self.current_num_chunks = math.ceil(
-            packet.duration
-            / self.chunk_duration_s
+        self.current_num_chunks = (
+            self.chunk_grid.chunk_count(
+                packet.duration
+            )
         )
 
         if self.current_num_chunks <= 0:
@@ -872,9 +874,14 @@ class ControlWindow(QMainWindow):
         self.browsing_buffers = []
         self.browsing_view.clear_spectrogram()
 
-        start_s = (
-            self.current_chunk_index
-            * self.chunk_duration_s
+        (
+            start_s,
+            end_s,
+        ) = self.chunk_grid.chunk_bounds(
+            self.current_chunk_index,
+            total_duration_s=(
+                self.current_audio_packet.duration
+            ),
         )
 
         self._browsing_request_id += 1
@@ -899,7 +906,10 @@ class ControlWindow(QMainWindow):
             packet=self.current_audio_packet,
             chunk_index=self.current_chunk_index,
             start_s=start_s,
-            duration_s=self.chunk_duration_s,
+            duration_s=(
+                end_s
+                - start_s
+            ),
         )
 
     @Slot(int, object)
@@ -1028,15 +1038,14 @@ class ControlWindow(QMainWindow):
 
             return
 
-        start_s = (
-            self.current_chunk_index
-            * self.chunk_duration_s
-        )
-
-        end_s = min(
-            start_s
-            + self.chunk_duration_s,
-            self.current_audio_packet.duration,
+        (
+            start_s,
+            end_s,
+        ) = self.chunk_grid.chunk_bounds(
+            self.current_chunk_index,
+            total_duration_s=(
+                self.current_audio_packet.duration
+            ),
         )
 
         self.browsing_view.set_chunk_label(

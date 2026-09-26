@@ -1,7 +1,12 @@
 import sys
 import threading
 
-CHUNK_DURATION_S = 5.0
+CANONICAL_CHUNK_DURATION_S = 5.0
+
+from src.CanonicalChunkGrid import CanonicalChunkGrid
+chunk_grid = CanonicalChunkGrid(
+    chunk_duration_s=CANONICAL_CHUNK_DURATION_S
+)
 
 from src.AudioPacket import AudioPacket
 ap = AudioPacket()
@@ -24,7 +29,7 @@ tp = TerminalPrint(
 
 from src.AudioBufferLoader import AudioBufferLoader
 abl = AudioBufferLoader(
-    buffer_seconds=CHUNK_DURATION_S
+    chunk_grid=chunk_grid
 )
 
 from src.HighPassFilter import HighPassFilter
@@ -75,7 +80,7 @@ from src.ControlWindow import ControlWindow
 window = ControlWindow(
     audio_packet_source=cs,
     audio_reader=ar,
-    chunk_duration_s=CHUNK_DURATION_S,
+    chunk_grid=chunk_grid,
     embedding_name=ec.embedding_name,
 )
 
