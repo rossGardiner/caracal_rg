@@ -64,15 +64,18 @@ class ControlWindow(QMainWindow):
         super().__init__()
 
         # ==================================================
-        # Current pipeline state
+        # Processed pipeline state
         # ==================================================
 
-        self.current_buffers = []
+        self.processed_buffers = []
 
         self._waiting_for_next = False
+
         # ==================================================
-        # Recording navigation state
+        # Recording browsing state
         # ==================================================
+
+        self.browsing_buffers = []
 
         if chunk_duration_s <= 0:
             raise ValueError(
@@ -474,7 +477,11 @@ class ControlWindow(QMainWindow):
         # Initial control state
         # ==================================================
 
-        self._set_controls_enabled(
+        self._set_browsing_controls_enabled(
+            False
+        )
+
+        self._set_pipeline_controls_enabled(
             False
         )
 
@@ -520,9 +527,7 @@ class ControlWindow(QMainWindow):
         if not buffers:
             return
 
-        self.stop_audio()
-
-        self.current_buffers = (
+        self.processed_buffers = (
             buffers
         )
 
@@ -534,23 +539,21 @@ class ControlWindow(QMainWindow):
         # Delegate visualisation
         # --------------------------------------------------
 
-        self.spectrogram.set_buffers(
-            self.current_buffers
-        )
-
+        # The existing spectrogram belongs to browsing.
+        # Processed pipeline data must not replace it.
         self.embedding_visualiser.add_buffers(
-            self.current_buffers
+            self.processed_buffers
         )
 
         # --------------------------------------------------
         # Controls
         # --------------------------------------------------
 
-        self._set_controls_enabled(
+        self._set_pipeline_controls_enabled(
             True
         )
 
-        self._update_status()
+        self._update_pipeline_status()
 
     # ======================================================
     # Pipeline control
@@ -566,13 +569,11 @@ class ControlWindow(QMainWindow):
         if not self._waiting_for_next:
             return
 
-        self.stop_audio()
-
         self._waiting_for_next = (
             False
         )
 
-        self._set_controls_enabled(
+        self._set_pipeline_controls_enabled(
             False
         )
 
@@ -588,23 +589,27 @@ class ControlWindow(QMainWindow):
 
     def _combined_waveform(
         self,
+        buffers,
     ):
         """
-        Combine all AudioBuffers in the current batch for
-        playback.
+        Combine AudioBuffers for playback.
+
+        The caller explicitly supplies the buffer collection so
+        browsing state and processed pipeline state cannot be
+        mixed accidentally.
         """
 
-        if not self.current_buffers:
+        if not buffers:
             return None, None
 
         sample_rate = (
-            self.current_buffers[
+            buffers[
                 0
             ].sample_rate
         )
 
         first_waveform = (
-            self.current_buffers[
+            buffers[
                 0
             ].waveform
         )
@@ -624,7 +629,7 @@ class ControlWindow(QMainWindow):
 
         waveforms = []
 
-        for buffer in self.current_buffers:
+        for buffer in buffers:
 
             if buffer.sample_rate != sample_rate:
 
@@ -699,7 +704,9 @@ class ControlWindow(QMainWindow):
         self,
     ):
         waveform, sample_rate = (
-            self._combined_waveform()
+            self._combined_waveform(
+                self.browsing_buffers
+            )
         )
 
         if waveform is None:
@@ -828,7 +835,7 @@ class ControlWindow(QMainWindow):
 
         self.statusBar().showMessage(
             f"Playing "
-            f"{len(self.current_buffers)} buffer(s)"
+            f"{len(self.browsing_buffers)} browsing buffer(s)"
             f" | {duration:.2f}s"
             f" | volume "
             f"{self.volume_slider.value()}%"
@@ -874,6 +881,11 @@ class ControlWindow(QMainWindow):
             self.current_audio_packet = None
             self.current_chunk_index = 0
             self.current_num_chunks = 0
+            self.browsing_buffers = []
+
+            self._set_browsing_controls_enabled(
+                False
+            )
 
             self.chunk_slider.setEnabled(
                 False
@@ -995,12 +1007,12 @@ class ControlWindow(QMainWindow):
             chunk_index=self.current_chunk_index,
         )
 
-        self.current_buffers = [
+        self.browsing_buffers = [
             audio_buffer
         ]
 
         self.spectrogram.set_buffers(
-            self.current_buffers
+            self.browsing_buffers
         )
 
         self.play_button.setEnabled(
@@ -1041,7 +1053,7 @@ class ControlWindow(QMainWindow):
     # Controls
     # ======================================================
 
-    def _set_controls_enabled(
+    def _set_browsing_controls_enabled(
         self,
         enabled,
     ):
@@ -1053,6 +1065,10 @@ class ControlWindow(QMainWindow):
             enabled
         )
 
+    def _set_pipeline_controls_enabled(
+        self,
+        enabled,
+    ):
         self.next_button.setEnabled(
             enabled
         )
@@ -1061,23 +1077,43 @@ class ControlWindow(QMainWindow):
     # Status
     # ======================================================
 
-    def _update_status(
+    def _update_pipeline_status(
         self,
     ):
-        waveform, sample_rate = (
-            self._combined_waveform()
-        )
-
-        if waveform is None:
+        if not self.processed_buffers:
 
             self.statusBar().showMessage(
-                "Waiting for audio..."
+                "Waiting for processed audio..."
             )
 
             return
 
+        first_buffer = (
+            self.processed_buffers[0]
+        )
+
+        sample_rate = (
+            first_buffer.sample_rate
+        )
+
+        first_waveform = np.asarray(
+            first_buffer.waveform
+        )
+
+        if first_waveform.ndim == 1:
+            channel_count = 1
+        else:
+            channel_count = (
+                first_waveform.shape[1]
+            )
+
+        total_samples = sum(
+            len(buffer.waveform)
+            for buffer in self.processed_buffers
+        )
+
         duration = (
-            len(waveform)
+            total_samples
             / sample_rate
         )
 
@@ -1087,10 +1123,10 @@ class ControlWindow(QMainWindow):
         )
 
         self.statusBar().showMessage(
-            f"{len(self.current_buffers)} buffer(s)"
+            f"{len(self.processed_buffers)} processed buffer(s)"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
-            f" | {waveform.shape[1]} channel(s)"
+            f" | {channel_count} channel(s)"
             f" | {total_embeddings} embeddings seen"
         )
 
