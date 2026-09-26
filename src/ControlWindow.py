@@ -24,6 +24,7 @@ from src.AudioPacketSource import AudioPacketSource
 from src.AudioReader import AudioReader
 from src.BrowsingAudioLoader import BrowsingAudioLoader
 from src.CanonicalChunkGrid import CanonicalChunkGrid
+from src.EmbeddingCacheWorker import EmbeddingCacheWorker
 from src.BrowsingView import BrowsingView
 from src.ProcessedView import ProcessedView
 from src.SpectrogramWorker import SpectrogramWorker
@@ -54,6 +55,8 @@ class ControlWindow(QMainWindow):
         audio_packet_source: AudioPacketSource,
         audio_reader: AudioReader,
         chunk_grid: CanonicalChunkGrid,
+        embedding_cache,
+        pipeline_hash: str,
         embedding_name="perch_v2",
     ):
         super().__init__()
@@ -73,6 +76,12 @@ class ControlWindow(QMainWindow):
 
         self.browsing_buffers = []
 
+        # Compatible cached embeddings are loaded independently from
+        # source-audio browsing. Results use their own request id so a
+        # slow cache scan for a previous recording cannot replace the
+        # currently selected recording's PCA dataset.
+        self._embedding_cache_request_id = 0
+
         if not isinstance(
             chunk_grid,
             CanonicalChunkGrid,
@@ -86,6 +95,17 @@ class ControlWindow(QMainWindow):
         )
 
         self.chunk_grid = chunk_grid
+        self.pipeline_hash = str(
+            pipeline_hash
+        )
+        self.embedding_name = str(
+            embedding_name
+        )
+
+        if not self.pipeline_hash:
+            raise ValueError(
+                "pipeline_hash cannot be empty"
+            )
 
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
@@ -94,6 +114,19 @@ class ControlWindow(QMainWindow):
         self.current_audio_packet = None
         self.current_chunk_index = 0
         self.current_num_chunks = 0
+
+        self.embedding_cache_worker = EmbeddingCacheWorker(
+            cache=embedding_cache,
+            parent=self,
+        )
+
+        self.embedding_cache_worker.loaded.connect(
+            self._cached_embeddings_loaded
+        )
+
+        self.embedding_cache_worker.failed.connect(
+            self._cached_embeddings_failed
+        )
 
         # Every browsing request receives a monotonically increasing
         # id. Results are accepted only when they match the newest id.
@@ -168,7 +201,7 @@ class ControlWindow(QMainWindow):
         )
 
         self.processed_view = ProcessedView(
-            embedding_name=embedding_name,
+            embedding_name=self.embedding_name,
         )
 
         self.browsing_view.recording_selected.connect(
@@ -288,8 +321,23 @@ class ControlWindow(QMainWindow):
         self.current_processed_buffer_index = 0
         self._waiting_for_next = True
 
+        # The processed-audio inspector always shows the live batch,
+        # but the PCA view is scoped to the recording selected on the
+        # browsing side. Only matching chunks are merged into it.
+        selected_recording_id = (
+            self._selected_recording_id()
+        )
+
+        matching_buffers = [
+            buffer
+            for buffer
+            in self.processed_buffers
+            if buffer.recording_id
+            == selected_recording_id
+        ]
+
         self.processed_view.add_buffers(
-            self.processed_buffers
+            matching_buffers
         )
 
         self._select_processed_buffer(
@@ -781,6 +829,11 @@ class ControlWindow(QMainWindow):
             # Invalidate any result already being loaded for the
             # previous selection.
             self._browsing_request_id += 1
+            self._embedding_cache_request_id += 1
+
+            self.processed_view.clear_recording_embeddings(
+                "No recording selected"
+            )
 
             self._set_browsing_controls_enabled(
                 False
@@ -831,8 +884,111 @@ class ControlWindow(QMainWindow):
             self.current_num_chunks
         )
 
+        self._request_cached_embeddings()
         self._update_chunk_label()
         self._request_selected_chunk()
+
+    def _selected_recording_id(
+        self,
+    ):
+        if self.current_audio_packet is None:
+            return None
+
+        return self.current_audio_packet.recording_id
+
+    def _request_cached_embeddings(
+        self,
+    ):
+        """
+        Load every embedding compatible with the active pipeline for
+        the recording selected in BrowsingView.
+
+        Disk scanning and NumPy file loading happen in
+        EmbeddingCacheWorker, not on the Qt GUI thread.
+        """
+
+        recording_id = (
+            self._selected_recording_id()
+        )
+
+        self._embedding_cache_request_id += 1
+
+        request_id = (
+            self._embedding_cache_request_id
+        )
+
+        if recording_id is None:
+            self.processed_view.clear_recording_embeddings(
+                "Selected recording has no recording_id"
+            )
+            return
+
+        self.processed_view.clear_recording_embeddings(
+            f"Loading cached {self.embedding_name!r} embeddings..."
+        )
+
+        self.embedding_cache_worker.request(
+            request_id=request_id,
+            recording_id=recording_id,
+            pipeline_hash=self.pipeline_hash,
+            embedding_name=self.embedding_name,
+        )
+
+    @Slot(int, object)
+    def _cached_embeddings_loaded(
+        self,
+        request_id: int,
+        embeddings,
+    ):
+        if (
+            request_id
+            != self._embedding_cache_request_id
+        ):
+            return
+
+        self.processed_view.set_recording_embeddings(
+            embeddings
+        )
+
+        # A live pipeline batch may have arrived while the cache was
+        # being scanned. Merge the currently held matching buffers back
+        # into the freshly loaded cache view so those points are not lost.
+        selected_recording_id = (
+            self._selected_recording_id()
+        )
+
+        matching_buffers = [
+            buffer
+            for buffer
+            in self.processed_buffers
+            if buffer.recording_id
+            == selected_recording_id
+        ]
+
+        if matching_buffers:
+            self.processed_view.add_buffers(
+                matching_buffers
+            )
+
+    @Slot(int, str)
+    def _cached_embeddings_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._embedding_cache_request_id
+        ):
+            return
+
+        self.processed_view.clear_recording_embeddings(
+            "Could not load cached embeddings"
+        )
+
+        self.statusBar().showMessage(
+            f"Could not load cached embeddings: {message}"
+        )
 
     def _chunk_selected(
         self,
@@ -1127,7 +1283,7 @@ class ControlWindow(QMainWindow):
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
             f" | {channel_count} channel(s)"
-            f" | {total_embeddings} embeddings seen"
+            f" | {total_embeddings} selected-recording embeddings"
         )
 
     # ======================================================
@@ -1143,6 +1299,7 @@ class ControlWindow(QMainWindow):
         self.browsing_audio_loader.shutdown()
         self.browsing_spectrogram_worker.shutdown()
         self.processed_spectrogram_worker.shutdown()
+        self.embedding_cache_worker.shutdown()
 
         # Make sure the pipeline worker is not permanently stuck
         # waiting on GuiPipelineLink if the application closes.

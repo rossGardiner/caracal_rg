@@ -27,7 +27,7 @@ class ProcessedView(QWidget):
         - processed spectrogram
         - processed playback controls
         - processed playback volume
-        - cumulative embedding visualisation
+        - compatible embeddings for the selected recording
         - pipeline batch status
         - pipeline Next control
 
@@ -376,10 +376,36 @@ class ProcessedView(QWidget):
     # Embeddings
     # ======================================================
 
+    def set_recording_embeddings(
+        self,
+        embeddings,
+    ):
+        """
+        Replace the PCA dataset with compatible cached embeddings for
+        the recording currently selected in BrowsingView.
+        """
+
+        self.embedding_visualiser.set_embeddings(
+            embeddings
+        )
+
+    def clear_recording_embeddings(
+        self,
+        status_text="Waiting for embeddings...",
+    ):
+        self.embedding_visualiser.clear_history(
+            status_text=status_text
+        )
+
     def add_buffers(
         self,
         buffers,
     ):
+        """
+        Merge live processed buffers into the selected recording's
+        embedding view.
+        """
+
         self.embedding_visualiser.add_buffers(
             buffers
         )

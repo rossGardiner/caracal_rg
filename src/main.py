@@ -63,6 +63,27 @@ ecs = EmbeddingCacheSaver(
 from src.SpeedometerLink import SpeedometerLink
 sl = SpeedometerLink()
 
+# ==========================================================
+# Build the embedding-producing portion of the pipeline first
+# ==========================================================
+#
+# EmbeddingsCreator.get_config_hash() walks upstream through the
+# registered PipelineLink.previous chain. The GUI needs that exact hash
+# so it can list only cache entries compatible with this pipeline.
+# Therefore the upstream chain must exist before ControlWindow is made.
+#
+
+cs.register_callback(abl)
+
+abl.register_callback(hps)
+hps.register_callback(sl)
+sl.register_callback(rs)
+
+rs.register_callback(ecl)
+ecl.register_callback(ec)
+
+pipeline_hash = ec.get_config_hash()
+
 from PySide6.QtWidgets import QApplication
 from src.QtSignalHandler import QtSignalHandler
 
@@ -81,6 +102,8 @@ window = ControlWindow(
     audio_packet_source=cs,
     audio_reader=ar,
     chunk_grid=chunk_grid,
+    embedding_cache=ecache,
+    pipeline_hash=pipeline_hash,
     embedding_name=ec.embedding_name,
 )
 
@@ -89,14 +112,7 @@ gpl = GuiPipelineLink(
     control_window=window
 )
 
-cs.register_callback(abl)
-
-abl.register_callback(hps)
-hps.register_callback(sl)
-sl.register_callback(rs)
-
-rs.register_callback(ecl)
-ecl.register_callback(ec)
+# Complete the downstream side of the pipeline after the window exists.
 ec.register_callback(ecs)
 ecs.register_callback(gpl)
 
