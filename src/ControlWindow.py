@@ -1386,6 +1386,7 @@ class ControlWindow(QMainWindow):
         self.processed_spectrogram_worker.shutdown()
         self.embedding_cache_worker.shutdown()
         self.embedding_request_worker.shutdown()
+        self.processed_view.shutdown()
 
         super().closeEvent(
             event

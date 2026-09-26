@@ -430,6 +430,11 @@ class ProcessedView(QWidget):
             text
         )
 
+    def shutdown(
+        self,
+    ):
+        self.embedding_visualiser.shutdown()
+
     # ======================================================
     # Internal UI slots
     # ======================================================

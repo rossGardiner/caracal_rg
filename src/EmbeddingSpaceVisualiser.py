@@ -1,11 +1,15 @@
 import numpy as np
 import pyqtgraph as pg
 
+from PySide6.QtCore import Slot
+
 from PySide6.QtWidgets import (
     QWidget,
     QLabel,
     QVBoxLayout,
 )
+
+from src.EmbeddingPCAWorker import EmbeddingPCAWorker
 
 
 class EmbeddingSpaceVisualiser(QWidget):
@@ -58,6 +62,23 @@ class EmbeddingSpaceVisualiser(QWidget):
         self.embedding_vectors = []
 
         self._current_keys = set()
+
+        # Each dataset change invalidates the previous projection. The
+        # worker retains at most one pending request, so rapid cache/live
+        # updates cannot build a long queue of obsolete SVD calculations.
+        self._pca_request_id = 0
+
+        self._pca_worker = EmbeddingPCAWorker(
+            parent=self
+        )
+
+        self._pca_worker.ready.connect(
+            self._pca_ready
+        )
+
+        self._pca_worker.failed.connect(
+            self._pca_failed
+        )
 
         # ==================================================
         # Plot
@@ -156,7 +177,7 @@ class EmbeddingSpaceVisualiser(QWidget):
                 record
             )
 
-        self._redraw()
+        self._request_redraw()
 
     def add_embeddings(
         self,
@@ -181,7 +202,7 @@ class EmbeddingSpaceVisualiser(QWidget):
                 record
             )
 
-        self._redraw()
+        self._request_redraw()
 
     def add_buffers(
         self,
@@ -220,7 +241,7 @@ class EmbeddingSpaceVisualiser(QWidget):
 
         self._current_keys = current_keys
 
-        self._redraw()
+        self._request_redraw()
 
     def set_status(
         self,
@@ -406,14 +427,27 @@ class EmbeddingSpaceVisualiser(QWidget):
         ] = vector
 
     # ======================================================
-    # Drawing
+    # PCA scheduling and drawing
     # ======================================================
 
-    def _redraw(
+    def _request_redraw(
         self,
     ):
-        if not self.embedding_vectors:
+        """
+        Schedule PCA for the current embedding dataset.
 
+        The Qt thread only snapshots references to the current immutable
+        embedding vectors and returns immediately. Matrix assembly and SVD
+        happen in EmbeddingPCAWorker.
+        """
+
+        self._pca_request_id += 1
+
+        request_id = (
+            self._pca_request_id
+        )
+
+        if not self.embedding_vectors:
             self.scatter.clear()
 
             self.status.setText(
@@ -423,16 +457,75 @@ class EmbeddingSpaceVisualiser(QWidget):
 
             return
 
-        matrix = np.stack(
-            self.embedding_vectors,
-            axis=0,
+        point_count = len(
+            self.embedding_vectors
         )
 
-        (
-            coordinates,
-            explained_variance,
-        ) = self._pca_2d(
-            matrix
+        self.status.setText(
+            f"Calculating PCA for {point_count} compatible embeddings..."
+        )
+
+        self._pca_worker.request(
+            request_id=request_id,
+            vectors=self.embedding_vectors,
+        )
+
+    @Slot(int, object)
+    def _pca_ready(
+        self,
+        request_id: int,
+        result,
+    ):
+        if (
+            request_id
+            != self._pca_request_id
+        ):
+            return
+
+        if (
+            len(result.coordinates)
+            != len(self._records)
+        ):
+            # The dataset changed while the result was in flight. A newer
+            # request should already exist, so this result is not drawable.
+            return
+
+        self._draw_pca_result(
+            result
+        )
+
+    @Slot(int, str)
+    def _pca_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._pca_request_id
+        ):
+            return
+
+        self.scatter.clear()
+
+        self.status.setText(
+            f"PCA failed: {message}"
+        )
+
+    def _draw_pca_result(
+        self,
+        result,
+    ):
+        """
+        Render an already-computed PCA result on the Qt GUI thread.
+        """
+
+        coordinates = (
+            result.coordinates
+        )
+
+        explained_variance = (
+            result.explained_variance
         )
 
         point_count = len(
@@ -541,120 +634,6 @@ class EmbeddingSpaceVisualiser(QWidget):
         )
 
     # ======================================================
-    # PCA
-    # ======================================================
-
-    @staticmethod
-    def _pca_2d(
-        matrix,
-    ):
-        """
-        PCA using NumPy SVD.
-
-        PCA is recalculated over all embeddings for the selected
-        recording whenever the displayed dataset changes.
-        """
-
-        matrix = np.asarray(
-            matrix,
-            dtype=np.float64,
-        )
-
-        sample_count = matrix.shape[0]
-
-        if sample_count == 1:
-            return (
-                np.zeros(
-                    (1, 2),
-                    dtype=np.float64,
-                ),
-                np.zeros(
-                    2,
-                    dtype=np.float64,
-                ),
-            )
-
-        centred = (
-            matrix
-            - matrix.mean(
-                axis=0,
-                keepdims=True,
-            )
-        )
-
-        (
-            u,
-            singular_values,
-            _,
-        ) = np.linalg.svd(
-            centred,
-            full_matrices=False,
-        )
-
-        component_count = min(
-            2,
-            len(
-                singular_values
-            ),
-        )
-
-        coordinates = (
-            u[
-                :,
-                :component_count
-            ]
-            * singular_values[
-                :component_count
-            ]
-        )
-
-        if component_count < 2:
-            coordinates = np.pad(
-                coordinates,
-                (
-                    (0, 0),
-                    (
-                        0,
-                        2 - component_count,
-                    ),
-                ),
-            )
-
-        variance = (
-            singular_values ** 2
-        )
-
-        total_variance = (
-            variance.sum()
-        )
-
-        if total_variance > 0:
-            explained_variance = (
-                variance
-                / total_variance
-            )
-        else:
-            explained_variance = np.zeros_like(
-                variance
-            )
-
-        if len(explained_variance) < 2:
-            explained_variance = np.pad(
-                explained_variance,
-                (
-                    0,
-                    2 - len(
-                        explained_variance
-                    ),
-                ),
-            )
-
-        return (
-            coordinates,
-            explained_variance[:2],
-        )
-
-    # ======================================================
     # Reset
     # ======================================================
 
@@ -662,6 +641,10 @@ class EmbeddingSpaceVisualiser(QWidget):
         self,
         status_text="Waiting for embeddings...",
     ):
+        # Invalidate any PCA result already being calculated for the old
+        # recording/dataset.
+        self._pca_request_id += 1
+
         self._records.clear()
         self._record_index_by_key.clear()
         self.embedding_vectors.clear()
@@ -671,4 +654,19 @@ class EmbeddingSpaceVisualiser(QWidget):
 
         self.status.setText(
             status_text
+        )
+
+    def shutdown(
+        self,
+    ):
+        self._pca_worker.shutdown()
+
+    def closeEvent(
+        self,
+        event,
+    ):
+        self.shutdown()
+
+        super().closeEvent(
+            event
         )
