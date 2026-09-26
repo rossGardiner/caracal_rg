@@ -103,9 +103,9 @@ window = ControlWindow(
     audio_reader=ar,
     chunk_grid=chunk_grid,
     embedding_cache=ecache,
-    embeddings_creator=ec,
     high_pass_filter=hps,
     resampler=rs,
+    embeddings_creator=ec,
     pipeline_hash=pipeline_hash,
     embedding_name=ec.embedding_name,
 )

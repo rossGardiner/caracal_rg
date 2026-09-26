@@ -177,14 +177,14 @@ class ProcessedView(QWidget):
         # Embeddings
         # ==================================================
 
-        self.interactive_embedding_status = QLabel(
-            "Selected chunk embedding: waiting for audio"
-        )
-
         self.embedding_visualiser = (
             EmbeddingSpaceVisualiser(
                 embedding_name=embedding_name
             )
+        )
+
+        self.selected_embedding_status = QLabel(
+            "Selected chunk embedding: waiting for source audio..."
         )
 
         # ==================================================
@@ -238,7 +238,7 @@ class ProcessedView(QWidget):
         )
 
         layout.addWidget(
-            self.interactive_embedding_status
+            self.selected_embedding_status
         )
 
         layout.addWidget(
@@ -405,6 +405,24 @@ class ProcessedView(QWidget):
             status_text=status_text
         )
 
+    def add_embeddings(
+        self,
+        embeddings,
+    ):
+        """Merge newly available interactive embeddings into the PCA view."""
+
+        self.embedding_visualiser.add_embeddings(
+            embeddings
+        )
+
+    def set_selected_embedding_status(
+        self,
+        text,
+    ):
+        self.selected_embedding_status.setText(
+            str(text)
+        )
+
     def add_buffers(
         self,
         buffers,
@@ -416,24 +434,6 @@ class ProcessedView(QWidget):
 
         self.embedding_visualiser.add_buffers(
             buffers
-        )
-
-    def add_recording_embeddings(
-        self,
-        embeddings,
-    ):
-        """Merge newly available embeddings without changing batch markers."""
-
-        self.embedding_visualiser.add_embeddings(
-            embeddings
-        )
-
-    def set_interactive_embedding_status(
-        self,
-        text,
-    ):
-        self.interactive_embedding_status.setText(
-            text
         )
 
     # ======================================================
