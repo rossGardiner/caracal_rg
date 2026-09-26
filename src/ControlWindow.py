@@ -25,6 +25,7 @@ from src.AudioReader import AudioReader
 from src.BrowsingAudioLoader import BrowsingAudioLoader
 from src.CanonicalChunkGrid import CanonicalChunkGrid
 from src.EmbeddingCacheWorker import EmbeddingCacheWorker
+from src.InteractiveEmbeddingWorker import InteractiveEmbeddingWorker
 from src.BrowsingView import BrowsingView
 from src.ProcessedView import ProcessedView
 from src.SpectrogramWorker import SpectrogramWorker
@@ -56,6 +57,9 @@ class ControlWindow(QMainWindow):
         audio_reader: AudioReader,
         chunk_grid: CanonicalChunkGrid,
         embedding_cache,
+        embeddings_creator,
+        high_pass_filter,
+        resampler,
         pipeline_hash: str,
         embedding_name="perch_v2",
     ):
@@ -81,6 +85,11 @@ class ControlWindow(QMainWindow):
         # slow cache scan for a previous recording cannot replace the
         # currently selected recording's PCA dataset.
         self._embedding_cache_request_id = 0
+
+        # Most recent interactive embedding result for the selected chunk.
+        # It is retained so a slower recording-level cache scan cannot
+        # overwrite a point that was computed while the scan was running.
+        self._interactive_embedding_result = None
 
         if not isinstance(
             chunk_grid,
@@ -126,6 +135,25 @@ class ControlWindow(QMainWindow):
 
         self.embedding_cache_worker.failed.connect(
             self._cached_embeddings_failed
+        )
+
+        self.interactive_embedding_worker = (
+            InteractiveEmbeddingWorker(
+                cache=embedding_cache,
+                embeddings_creator=embeddings_creator,
+                high_pass_filter=high_pass_filter,
+                resampler=resampler,
+                pipeline_hash=self.pipeline_hash,
+                parent=self,
+            )
+        )
+
+        self.interactive_embedding_worker.ready.connect(
+            self._interactive_embedding_ready
+        )
+
+        self.interactive_embedding_worker.failed.connect(
+            self._interactive_embedding_failed
         )
 
         # Every browsing request receives a monotonically increasing
@@ -830,9 +858,14 @@ class ControlWindow(QMainWindow):
             # previous selection.
             self._browsing_request_id += 1
             self._embedding_cache_request_id += 1
+            self._interactive_embedding_result = None
 
             self.processed_view.clear_recording_embeddings(
                 "No recording selected"
+            )
+
+            self.processed_view.set_interactive_embedding_status(
+                "Selected chunk embedding: no recording selected"
             )
 
             self._set_browsing_controls_enabled(
@@ -882,6 +915,12 @@ class ControlWindow(QMainWindow):
 
         self.browsing_view.set_chunk_range(
             self.current_num_chunks
+        )
+
+        self._interactive_embedding_result = None
+
+        self.processed_view.set_interactive_embedding_status(
+            "Selected chunk embedding: waiting for audio"
         )
 
         self._request_cached_embeddings()
@@ -949,6 +988,17 @@ class ControlWindow(QMainWindow):
         self.processed_view.set_recording_embeddings(
             embeddings
         )
+
+        if (
+            self._interactive_embedding_result is not None
+            and self._interactive_embedding_result.get(
+                "recording_id"
+            )
+            == self._selected_recording_id()
+        ):
+            self.processed_view.add_recording_embeddings(
+                [self._interactive_embedding_result]
+            )
 
         # A live pipeline batch may have arrived while the cache was
         # being scanned. Merge the currently held matching buffers back
@@ -1029,6 +1079,12 @@ class ControlWindow(QMainWindow):
         # is loading.
         self.browsing_buffers = []
         self.browsing_view.clear_spectrogram()
+        self._interactive_embedding_result = None
+
+        self.processed_view.set_interactive_embedding_status(
+            f"Selected chunk embedding: waiting for chunk "
+            f"{self.current_chunk_index} audio"
+        )
 
         (
             start_s,
@@ -1101,10 +1157,82 @@ class ControlWindow(QMainWindow):
             "calculating spectrogram..."
         )
 
+        self.processed_view.set_interactive_embedding_status(
+            f"Selected chunk embedding: checking chunk "
+            f"{audio_buffer.chunk_index}..."
+        )
+
         self.browsing_spectrogram_worker.request(
             request_id=request_id,
             waveform=audio_buffer.waveform,
             sample_rate=audio_buffer.sample_rate,
+        )
+
+        self.interactive_embedding_worker.request(
+            request_id=request_id,
+            audio_buffer=audio_buffer,
+        )
+
+    @Slot(int, object)
+    def _interactive_embedding_ready(
+        self,
+        request_id: int,
+        embedding,
+    ):
+        """Merge the selected chunk's embedding into the recording PCA."""
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        if self.current_audio_packet is None:
+            return
+
+        if (
+            embedding.get("recording_id")
+            != self._selected_recording_id()
+            or embedding.get("chunk_index")
+            != self.current_chunk_index
+        ):
+            return
+
+        self._interactive_embedding_result = (
+            embedding
+        )
+
+        self.processed_view.add_recording_embeddings(
+            [embedding]
+        )
+
+        if embedding.get(
+            "loaded_from_cache",
+            False,
+        ):
+            source_text = "loaded from cache"
+        else:
+            source_text = "computed and cached"
+
+        self.processed_view.set_interactive_embedding_status(
+            f"Selected chunk embedding: chunk "
+            f"{embedding['chunk_index']} {source_text}"
+        )
+
+    @Slot(int, str)
+    def _interactive_embedding_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.processed_view.set_interactive_embedding_status(
+            f"Selected chunk embedding failed: {message}"
         )
 
     @Slot(int, object)
@@ -1176,6 +1304,10 @@ class ControlWindow(QMainWindow):
 
         self._set_browsing_controls_enabled(
             False
+        )
+
+        self.processed_view.set_interactive_embedding_status(
+            "Selected chunk embedding: audio load failed"
         )
 
         self.statusBar().showMessage(
@@ -1300,6 +1432,7 @@ class ControlWindow(QMainWindow):
         self.browsing_spectrogram_worker.shutdown()
         self.processed_spectrogram_worker.shutdown()
         self.embedding_cache_worker.shutdown()
+        self.interactive_embedding_worker.shutdown()
 
         # Make sure the pipeline worker is not permanently stuck
         # waiting on GuiPipelineLink if the application closes.

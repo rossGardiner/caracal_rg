@@ -4,6 +4,7 @@
 # AudioBuffers are assumed to already contain mono float audio at the sample rate and length required by the configured model.
 
 from pathlib import Path
+import threading
 
 import numpy as np
 import onnxruntime as ort
@@ -79,6 +80,11 @@ class EmbeddingsCreator(PipelineLink):
         self.input_name = model_inputs[0].name
         self.input_shape = model_inputs[0].shape
         self.input_type = model_inputs[0].type
+
+        # Batch precomputation and interactive browsing can both request
+        # inference. Keep one shared ONNX session, but serialize session.run()
+        # so the two paths do not compete inside the same model instance.
+        self._inference_lock = threading.Lock()
     
     def configuration_parameters(self) -> dict[str, any]:
         """Return configuration parameters affecting the embedding output.
@@ -91,35 +97,47 @@ class EmbeddingsCreator(PipelineLink):
         }
     
     def next_audio(self, audio):
-        """Run the ONNX model to compute embeddings and attach them to audio.
+        """Compute the embedding, then forward the AudioBuffer."""
 
-        If the embedding is already present, the buffer is forwarded unchanged.
+        audio = self.compute_embedding(
+            audio
+        )
 
-        Args:
-            audio (AudioBuffer): Buffer of mono audio at the expected sample rate.
+        if self.callback is not None:
+            self.callback.next_audio(audio)
 
-        Raises:
-            TypeError: If audio is not an AudioBuffer.
-            ValueError: For empty waveforms or channel count mismatches.
-            RuntimeError: If the ONNX model returns no outputs.
+    def compute_embedding(
+        self,
+        audio: AudioBuffer,
+    ) -> AudioBuffer:
+        """Compute and attach this creator's embedding without forwarding.
+
+        This is the shared inference implementation used by both the normal
+        callback pipeline and interactive random-access requests. If the
+        embedding is already present, the AudioBuffer is returned unchanged.
         """
+
         if not isinstance(audio, AudioBuffer):
             raise TypeError(
                 "EmbeddingsCreator expects an AudioBuffer"
             )
-        if self.embedding_name in audio.embeddings:
-            if self.callback is not None:
-                self.callback.next_audio(audio)
-            return
-        print("computing")
-        model_input = self._prepare_input(audio)
 
-        outputs = self.session.run(
-            None,
-            {
-                self.input_name: model_input,
-            },
+        if self.embedding_name in audio.embeddings:
+            return audio
+
+        print("computing")
+
+        model_input = self._prepare_input(
+            audio
         )
+
+        with self._inference_lock:
+            outputs = self.session.run(
+                None,
+                {
+                    self.input_name: model_input,
+                },
+            )
 
         if len(outputs) == 0:
             raise RuntimeError(
@@ -139,8 +157,7 @@ class EmbeddingsCreator(PipelineLink):
             "loaded_from_cache": False,
         }
 
-        if self.callback is not None:
-            self.callback.next_audio(audio)
+        return audio
 
     def _prepare_input(
         self,

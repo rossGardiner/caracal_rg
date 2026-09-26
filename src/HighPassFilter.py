@@ -58,6 +58,25 @@ class HighPassFilter(PipelineLink):
         }
 
     def next_audio(self, audio: AudioBuffer) -> None:
+        filtered_buffer = self.process(
+            audio
+        )
+
+        if self.callback is not None:
+            self.callback.next_audio(
+                filtered_buffer
+            )
+
+    def process(
+        self,
+        audio: AudioBuffer,
+    ) -> AudioBuffer:
+        """Filter one AudioBuffer and return the processed buffer.
+
+        next_audio() delegates to this method so batch processing and
+        interactive processing use the same filtering implementation.
+        """
+
         if not isinstance(audio, AudioBuffer):
             raise TypeError(
                 "HighPassFilter expects an AudioBuffer"
@@ -105,18 +124,13 @@ class HighPassFilter(PipelineLink):
         # Only update the stored state after filtering succeeds.
         self.filter_state = new_state
 
-        filtered_buffer = replace(
+        return replace(
             audio,
             waveform=filtered.astype(
                 np.float32,
                 copy=False,
             ),
         )
-
-        if self.callback is not None:
-            self.callback.next_audio(
-                filtered_buffer
-            )
 
     def _requires_reset(
         self,

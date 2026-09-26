@@ -197,6 +197,32 @@ class EmbeddingSpaceVisualiser(QWidget):
 
         self._redraw()
 
+    def add_embeddings(
+        self,
+        embeddings,
+    ):
+        """Merge cache-shaped embeddings without changing live-batch state.
+
+        Interactive embedding requests use this path. The newly available
+        point is added to the selected recording's PCA dataset, but the
+        triangles identifying the current sequential pipeline batch remain
+        unchanged.
+        """
+
+        for embedding in embeddings:
+            record = self._record_from_cached_embedding(
+                embedding
+            )
+
+            if record is None:
+                continue
+
+            self._upsert_record(
+                record
+            )
+
+        self._redraw()
+
     def set_status(
         self,
         text,
