@@ -29,7 +29,8 @@ class BrowsingView(QWidget):
         - playback volume
 
     It deliberately does not perform audio I/O or playback itself.
-    Those operations are still coordinated by ControlWindow for now.
+    ControlWindow coordinates playback and schedules audio I/O through
+    a background browsing loader.
     """
 
     recording_selected = Signal(int)
@@ -303,13 +304,23 @@ class BrowsingView(QWidget):
             text
         )
 
-    def set_buffers(
+    def set_spectrogram_result(
         self,
-        buffers,
+        result,
     ):
-        self.spectrogram.set_buffers(
-            buffers
+        """
+        Render a spectrogram that has already been calculated by a
+        background worker.
+        """
+
+        self.spectrogram.set_result(
+            result
         )
+
+    def clear_spectrogram(
+        self,
+    ):
+        self.spectrogram.clear()
 
     def set_browsing_controls_enabled(
         self,

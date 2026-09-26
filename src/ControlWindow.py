@@ -23,9 +23,10 @@ from PySide6.QtMultimedia import (
 
 from src.AudioPacketSource import AudioPacketSource
 from src.AudioReader import AudioReader
-from src.AudioBuffer import AudioBuffer
+from src.BrowsingAudioLoader import BrowsingAudioLoader
 from src.BrowsingView import BrowsingView
 from src.ProcessedView import ProcessedView
+from src.SpectrogramWorker import SpectrogramWorker
 
 
 class ControlWindow(QMainWindow):
@@ -86,11 +87,38 @@ class ControlWindow(QMainWindow):
             self.audio_packet_source.get_audio_packets()
         )
 
-        self.audio_reader = audio_reader
-
         self.current_audio_packet = None
         self.current_chunk_index = 0
         self.current_num_chunks = 0
+
+        # Every browsing request receives a monotonically increasing
+        # id. Results are accepted only when they match the newest id.
+        self._browsing_request_id = 0
+
+        self.browsing_audio_loader = BrowsingAudioLoader(
+            audio_reader=audio_reader,
+            parent=self,
+        )
+
+        self.browsing_audio_loader.loaded.connect(
+            self._browsing_audio_loaded
+        )
+
+        self.browsing_audio_loader.failed.connect(
+            self._browsing_audio_failed
+        )
+
+        self.spectrogram_worker = SpectrogramWorker(
+            parent=self,
+        )
+
+        self.spectrogram_worker.ready.connect(
+            self._browsing_spectrogram_ready
+        )
+
+        self.spectrogram_worker.failed.connect(
+            self._browsing_spectrogram_failed
+        )
 
         # ==================================================
         # Audio playback state
@@ -504,6 +532,10 @@ class ControlWindow(QMainWindow):
             self.current_num_chunks = 0
             self.browsing_buffers = []
 
+            # Invalidate any result already being loaded for the
+            # previous selection.
+            self._browsing_request_id += 1
+
             self._set_browsing_controls_enabled(
                 False
             )
@@ -515,6 +547,8 @@ class ControlWindow(QMainWindow):
             self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
+
+            self.browsing_view.clear_spectrogram()
 
             return
 
@@ -551,7 +585,7 @@ class ControlWindow(QMainWindow):
         )
 
         self._update_chunk_label()
-        self._load_selected_chunk()
+        self._request_selected_chunk()
 
     def _chunk_selected(
         self,
@@ -567,50 +601,172 @@ class ControlWindow(QMainWindow):
         self.current_chunk_index = chunk_index
 
         self._update_chunk_label()
-        self._load_selected_chunk()
+        self._request_selected_chunk()
 
-    def _load_selected_chunk(
+    def _request_selected_chunk(
         self,
     ):
+        """
+        Schedule the currently selected chunk for background loading.
+
+        This method runs on the Qt GUI thread, so it deliberately does
+        no file I/O. It only updates lightweight GUI state and submits
+        a request to BrowsingAudioLoader.
+        """
+
         if self.current_audio_packet is None:
             return
 
         self.stop_audio()
+
+        # The previous audio/spectrogram no longer represents the
+        # slider position. Clear it immediately while the new request
+        # is loading.
+        self.browsing_buffers = []
+        self.browsing_view.clear_spectrogram()
 
         start_s = (
             self.current_chunk_index
             * self.chunk_duration_s
         )
 
-        waveform, sample_rate = (
-            self.audio_reader.read(
-                packet=self.current_audio_packet,
-                start_s=start_s,
-                duration_s=self.chunk_duration_s,
-            )
+        self._browsing_request_id += 1
+
+        request_id = (
+            self._browsing_request_id
         )
 
-        audio_buffer = AudioBuffer(
-            packet=self.current_audio_packet,
-            waveform=waveform,
-            sample_rate=sample_rate,
-            start_offset_s=start_s,
-            valid_samples=len(waveform),
-            left_context_samples=0,
-            right_context_samples=0,
-            chunk_index=self.current_chunk_index,
+        # Do not allow playback of the previously loaded chunk while
+        # the UI is pointing at a new chunk. The slider itself remains
+        # enabled and responsive.
+        self._set_browsing_controls_enabled(
+            False
         )
+
+        self.statusBar().showMessage(
+            f"Loading chunk {self.current_chunk_index}..."
+        )
+
+        self.browsing_audio_loader.request(
+            request_id=request_id,
+            packet=self.current_audio_packet,
+            chunk_index=self.current_chunk_index,
+            start_s=start_s,
+            duration_s=self.chunk_duration_s,
+        )
+
+    @Slot(int, object)
+    def _browsing_audio_loaded(
+        self,
+        request_id: int,
+        audio_buffer,
+    ):
+        """
+        Accept current source audio and schedule its spectrogram.
+
+        Playback can become available as soon as audio loading finishes.
+        The more expensive FFT is requested separately so it never runs
+        on the Qt GUI thread.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
 
         self.browsing_buffers = [
             audio_buffer
         ]
 
-        self.browsing_view.set_buffers(
-            self.browsing_buffers
-        )
-
         self._set_browsing_controls_enabled(
             True
+        )
+
+        self.statusBar().showMessage(
+            f"Loaded chunk {audio_buffer.chunk_index}; "
+            "calculating spectrogram..."
+        )
+
+        self.spectrogram_worker.request(
+            request_id=request_id,
+            waveform=audio_buffer.waveform,
+            sample_rate=audio_buffer.sample_rate,
+        )
+
+    @Slot(int, object)
+    def _browsing_spectrogram_ready(
+        self,
+        request_id: int,
+        result,
+    ):
+        """
+        Draw a spectrogram only when it still belongs to the current
+        browsing selection.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_view.set_spectrogram_result(
+            result
+        )
+
+        self.statusBar().showMessage(
+            f"Loaded chunk {self.current_chunk_index}"
+        )
+
+    @Slot(int, str)
+    def _browsing_spectrogram_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        """
+        Report a current spectrogram failure without discarding the
+        successfully loaded audio.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_view.clear_spectrogram()
+
+        self.statusBar().showMessage(
+            f"Audio loaded, but spectrogram failed: {message}"
+        )
+
+    @Slot(int, str)
+    def _browsing_audio_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        """
+        Report an error only when it belongs to the current request.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_buffers = []
+        self.browsing_view.clear_spectrogram()
+
+        self._set_browsing_controls_enabled(
+            False
+        )
+
+        self.statusBar().showMessage(
+            f"Could not load chunk: {message}"
         )
 
     def _update_chunk_label(
@@ -620,6 +776,8 @@ class ControlWindow(QMainWindow):
             self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
+
+            self.browsing_view.clear_spectrogram()
 
             return
 
@@ -726,7 +884,10 @@ class ControlWindow(QMainWindow):
     ):
         self.stop_audio()
 
-        # Make sure the worker thread is not permanently stuck
+        self.browsing_audio_loader.shutdown()
+        self.spectrogram_worker.shutdown()
+
+        # Make sure the pipeline worker is not permanently stuck
         # waiting on GuiPipelineLink if the application closes.
         if self._waiting_for_next:
             self._waiting_for_next = False
