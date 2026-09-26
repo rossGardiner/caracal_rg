@@ -40,7 +40,8 @@ class ControlWindow(QMainWindow):
             playback controls
 
         ProcessedView
-            processed embeddings, pipeline status, Next control
+            processed audio inspection, processed embeddings,
+            pipeline status, Next control
 
     ControlWindow coordinates data loading, playback, and pipeline
     progression without allowing the two views to share GUI state.
@@ -62,6 +63,8 @@ class ControlWindow(QMainWindow):
         # ==================================================
 
         self.processed_buffers = []
+        self.current_processed_buffer_index = 0
+        self._processed_spectrogram_request_id = 0
         self._waiting_for_next = False
 
         # ==================================================
@@ -108,16 +111,30 @@ class ControlWindow(QMainWindow):
             self._browsing_audio_failed
         )
 
-        self.spectrogram_worker = SpectrogramWorker(
+        self.browsing_spectrogram_worker = SpectrogramWorker(
             parent=self,
         )
 
-        self.spectrogram_worker.ready.connect(
+        self.browsing_spectrogram_worker.ready.connect(
             self._browsing_spectrogram_ready
         )
 
-        self.spectrogram_worker.failed.connect(
+        self.browsing_spectrogram_worker.failed.connect(
             self._browsing_spectrogram_failed
+        )
+
+        # Processed audio has a separate spectrogram worker so a
+        # browsing request cannot replace/cancel processed inspection.
+        self.processed_spectrogram_worker = SpectrogramWorker(
+            parent=self,
+        )
+
+        self.processed_spectrogram_worker.ready.connect(
+            self._processed_spectrogram_ready
+        )
+
+        self.processed_spectrogram_worker.failed.connect(
+            self._processed_spectrogram_failed
         )
 
         # ==================================================
@@ -126,6 +143,7 @@ class ControlWindow(QMainWindow):
 
         self._audio_sink = None
         self._audio_buffer = None
+        self._playback_source = None
 
         # ==================================================
         # Main window
@@ -165,7 +183,19 @@ class ControlWindow(QMainWindow):
         )
 
         self.browsing_view.stop_requested.connect(
-            self.stop_audio
+            self.stop_browsing_audio
+        )
+
+        self.processed_view.buffer_selected.connect(
+            self._processed_buffer_selected
+        )
+
+        self.processed_view.play_requested.connect(
+            self.play_processed_audio
+        )
+
+        self.processed_view.stop_requested.connect(
+            self.stop_processed_audio
         )
 
         self.processed_view.next_requested.connect(
@@ -247,11 +277,22 @@ class ControlWindow(QMainWindow):
         if not buffers:
             return
 
+        # A new pipeline batch replaces the processed-audio inspection
+        # state, but must not interrupt source-audio browsing playback.
+        self._stop_audio_if_source(
+            "processed"
+        )
+
         self.processed_buffers = buffers
+        self.current_processed_buffer_index = 0
         self._waiting_for_next = True
 
         self.processed_view.add_buffers(
             self.processed_buffers
+        )
+
+        self._select_processed_buffer(
+            0
         )
 
         self._set_pipeline_controls_enabled(
@@ -365,20 +406,73 @@ class ControlWindow(QMainWindow):
     # Playback
     # ======================================================
 
-    def _playback_gain(
-        self,
-    ):
-        return (
-            self.browsing_view.volume_percent()
-            / 100.0
-        )
-
     def play_audio(
         self,
     ):
+        """Play the currently loaded source/browsing audio."""
+
+        self._play_buffers(
+            buffers=self.browsing_buffers,
+            volume_percent=(
+                self.browsing_view.volume_percent()
+            ),
+            playback_source="browsing",
+            description=(
+                f"{len(self.browsing_buffers)} browsing buffer(s)"
+            ),
+        )
+
+    def play_processed_audio(
+        self,
+    ):
+        """Play only the processed buffer currently being inspected."""
+
+        audio_buffer = (
+            self._current_processed_buffer()
+        )
+
+        if audio_buffer is None:
+            return
+
+        if audio_buffer.chunk_index is None:
+            description = (
+                "processed buffer "
+                f"{self.current_processed_buffer_index + 1}"
+            )
+        else:
+            description = (
+                "processed canonical chunk "
+                f"{audio_buffer.chunk_index}"
+            )
+
+        self._play_buffers(
+            buffers=[audio_buffer],
+            volume_percent=(
+                self.processed_view.volume_percent()
+            ),
+            playback_source="processed",
+            description=description,
+        )
+
+    def _play_buffers(
+        self,
+        buffers,
+        volume_percent,
+        playback_source,
+        description,
+    ):
+        """
+        Play an explicit collection of buffers through the shared audio
+        output device.
+
+        Browsing and processed views have separate controls/state, but
+        there is intentionally one QAudioSink: starting one source stops
+        the other rather than mixing two inspection streams together.
+        """
+
         waveform, sample_rate = (
             self._combined_waveform(
-                self.browsing_buffers
+                buffers
             )
         )
 
@@ -388,7 +482,7 @@ class ControlWindow(QMainWindow):
         self.stop_audio()
 
         # Always make a copy. Playback gain must never alter
-        # the source AudioBuffer data.
+        # an AudioBuffer's waveform in place.
         waveform = np.array(
             waveform,
             dtype=np.float32,
@@ -400,7 +494,8 @@ class ControlWindow(QMainWindow):
         )
 
         waveform *= (
-            self._playback_gain()
+            float(volume_percent)
+            / 100.0
         )
 
         waveform = np.clip(
@@ -482,18 +577,45 @@ class ControlWindow(QMainWindow):
             self._audio_buffer
         )
 
+        self._playback_source = (
+            playback_source
+        )
+
         duration = (
             len(waveform)
             / sample_rate
         )
 
         self.statusBar().showMessage(
-            f"Playing "
-            f"{len(self.browsing_buffers)} browsing buffer(s)"
+            f"Playing {description}"
             f" | {duration:.2f}s"
-            f" | volume "
-            f"{self.browsing_view.volume_percent()}%"
+            f" | {sample_rate} Hz"
+            f" | volume {volume_percent}%"
         )
+
+    def stop_browsing_audio(
+        self,
+    ):
+        self._stop_audio_if_source(
+            "browsing"
+        )
+
+    def stop_processed_audio(
+        self,
+    ):
+        self._stop_audio_if_source(
+            "processed"
+        )
+
+    def _stop_audio_if_source(
+        self,
+        playback_source,
+    ):
+        if (
+            self._playback_source
+            == playback_source
+        ):
+            self.stop_audio()
 
     def stop_audio(
         self,
@@ -507,6 +629,129 @@ class ControlWindow(QMainWindow):
             self._audio_buffer.close()
             self._audio_buffer.deleteLater()
             self._audio_buffer = None
+
+        self._playback_source = None
+
+    # ======================================================
+    # Processed audio inspection
+    # ======================================================
+
+    def _current_processed_buffer(
+        self,
+    ):
+        if not self.processed_buffers:
+            return None
+
+        if not (
+            0
+            <= self.current_processed_buffer_index
+            < len(self.processed_buffers)
+        ):
+            return None
+
+        return self.processed_buffers[
+            self.current_processed_buffer_index
+        ]
+
+    @Slot(int)
+    def _processed_buffer_selected(
+        self,
+        buffer_index: int,
+    ):
+        self._select_processed_buffer(
+            buffer_index
+        )
+
+    def _select_processed_buffer(
+        self,
+        buffer_index: int,
+    ):
+        """
+        Select one processed AudioBuffer from the current pipeline batch
+        and request its spectrogram without blocking the GUI thread.
+        """
+
+        if not self.processed_buffers:
+            self.processed_view.clear_processed_audio()
+            return
+
+        if not (
+            0
+            <= buffer_index
+            < len(self.processed_buffers)
+        ):
+            return
+
+        self._stop_audio_if_source(
+            "processed"
+        )
+
+        self.current_processed_buffer_index = (
+            buffer_index
+        )
+
+        audio_buffer = (
+            self._current_processed_buffer()
+        )
+
+        self.processed_view.set_buffer_selection(
+            index=buffer_index,
+            buffer_count=len(
+                self.processed_buffers
+            ),
+            audio_buffer=audio_buffer,
+        )
+
+        # The old image belongs to another processed buffer, so remove
+        # it immediately while the new FFT is calculated.
+        self.processed_view.clear_spectrogram()
+
+        self._processed_spectrogram_request_id += 1
+
+        request_id = (
+            self._processed_spectrogram_request_id
+        )
+
+        self.processed_spectrogram_worker.request(
+            request_id=request_id,
+            waveform=audio_buffer.waveform,
+            sample_rate=audio_buffer.sample_rate,
+        )
+
+    @Slot(int, object)
+    def _processed_spectrogram_ready(
+        self,
+        request_id: int,
+        result,
+    ):
+        if (
+            request_id
+            != self._processed_spectrogram_request_id
+        ):
+            return
+
+        self.processed_view.set_spectrogram_result(
+            result
+        )
+
+    @Slot(int, str)
+    def _processed_spectrogram_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._processed_spectrogram_request_id
+        ):
+            return
+
+        self.processed_view.clear_spectrogram()
+
+        self.statusBar().showMessage(
+            "Could not calculate processed spectrogram: "
+            f"{message}"
+        )
 
     # ======================================================
     # Recording navigation
@@ -617,7 +862,9 @@ class ControlWindow(QMainWindow):
         if self.current_audio_packet is None:
             return
 
-        self.stop_audio()
+        self._stop_audio_if_source(
+            "browsing"
+        )
 
         # The previous audio/spectrogram no longer represents the
         # slider position. Clear it immediately while the new request
@@ -688,7 +935,7 @@ class ControlWindow(QMainWindow):
             "calculating spectrogram..."
         )
 
-        self.spectrogram_worker.request(
+        self.browsing_spectrogram_worker.request(
             request_id=request_id,
             waveform=audio_buffer.waveform,
             sample_rate=audio_buffer.sample_rate,
@@ -885,7 +1132,8 @@ class ControlWindow(QMainWindow):
         self.stop_audio()
 
         self.browsing_audio_loader.shutdown()
-        self.spectrogram_worker.shutdown()
+        self.browsing_spectrogram_worker.shutdown()
+        self.processed_spectrogram_worker.shutdown()
 
         # Make sure the pipeline worker is not permanently stuck
         # waiting on GuiPipelineLink if the application closes.
