@@ -1,7 +1,6 @@
 import numpy as np
 
 from PySide6.QtCore import (
-    Signal,
     Slot,
     QByteArray,
     QBuffer,
@@ -43,13 +42,11 @@ class ControlWindow(QMainWindow):
 
         ProcessedView
             processed audio inspection, processed embeddings,
-            pipeline status, Next control
+            non-blocking pipeline status
 
     ControlWindow coordinates data loading, playback, and pipeline
-    progression without allowing the two views to share GUI state.
+    observation without allowing the two views to share GUI state.
     """
-
-    next_requested = Signal()
 
     def __init__(
         self,
@@ -72,7 +69,6 @@ class ControlWindow(QMainWindow):
         self.processed_buffers = []
         self.current_processed_buffer_index = 0
         self._processed_spectrogram_request_id = 0
-        self._waiting_for_next = False
 
         # ==================================================
         # Recording browsing state
@@ -260,10 +256,6 @@ class ControlWindow(QMainWindow):
             self.stop_processed_audio
         )
 
-        self.processed_view.next_requested.connect(
-            self.next_batch
-        )
-
         # ==================================================
         # Main layout
         # ==================================================
@@ -299,10 +291,6 @@ class ControlWindow(QMainWindow):
         # ==================================================
 
         self._set_browsing_controls_enabled(
-            False
-        )
-
-        self._set_pipeline_controls_enabled(
             False
         )
 
@@ -347,8 +335,6 @@ class ControlWindow(QMainWindow):
 
         self.processed_buffers = buffers
         self.current_processed_buffer_index = 0
-        self._waiting_for_next = True
-
         # The processed-audio inspector always shows the live batch,
         # but the PCA view is scoped to the recording selected on the
         # browsing side. Only matching chunks are merged into it.
@@ -372,37 +358,7 @@ class ControlWindow(QMainWindow):
             0
         )
 
-        self._set_pipeline_controls_enabled(
-            True
-        )
-
         self._update_pipeline_status()
-
-    # ======================================================
-    # Pipeline control
-    # ======================================================
-
-    def next_batch(
-        self,
-    ):
-        """
-        Release GuiPipelineLink and allow processing to continue.
-        """
-
-        if not self._waiting_for_next:
-            return
-
-        self._waiting_for_next = False
-
-        self._set_pipeline_controls_enabled(
-            False
-        )
-
-        self.processed_view.set_status(
-            "Loading next batch..."
-        )
-
-        self.next_requested.emit()
 
     # ======================================================
     # Playback waveform
@@ -1358,14 +1314,6 @@ class ControlWindow(QMainWindow):
             enabled
         )
 
-    def _set_pipeline_controls_enabled(
-        self,
-        enabled,
-    ):
-        self.processed_view.set_next_enabled(
-            enabled
-        )
-
     # ======================================================
     # Processed status
     # ======================================================
@@ -1416,7 +1364,7 @@ class ControlWindow(QMainWindow):
         )
 
         self.processed_view.set_status(
-            f"{len(self.processed_buffers)} processed buffer(s)"
+            f"Latest batch: {len(self.processed_buffers)} processed buffer(s)"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
             f" | {channel_count} channel(s)"
@@ -1438,12 +1386,6 @@ class ControlWindow(QMainWindow):
         self.processed_spectrogram_worker.shutdown()
         self.embedding_cache_worker.shutdown()
         self.embedding_request_worker.shutdown()
-
-        # Make sure the pipeline worker is not permanently stuck
-        # waiting on GuiPipelineLink if the application closes.
-        if self._waiting_for_next:
-            self._waiting_for_next = False
-            self.next_requested.emit()
 
         super().closeEvent(
             event

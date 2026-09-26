@@ -28,8 +28,7 @@ class ProcessedView(QWidget):
         - processed playback controls
         - processed playback volume
         - compatible embeddings for the selected recording
-        - pipeline batch status
-        - pipeline Next control
+        - latest pipeline batch status
 
     It does not calculate spectrograms or perform playback itself.
     ControlWindow coordinates those operations and returns display-ready
@@ -40,7 +39,6 @@ class ProcessedView(QWidget):
     play_requested = Signal()
     stop_requested = Signal()
     volume_changed = Signal(int)
-    next_requested = Signal()
 
     def __init__(
         self,
@@ -188,23 +186,11 @@ class ProcessedView(QWidget):
         )
 
         # ==================================================
-        # Pipeline controls
+        # Pipeline status
         # ==================================================
 
         self.status_label = QLabel(
             "Waiting for processed audio..."
-        )
-
-        self.next_button = QPushButton(
-            "Next batch"
-        )
-
-        self.next_button.setEnabled(
-            False
-        )
-
-        self.next_button.clicked.connect(
-            self.next_requested.emit
         )
 
         pipeline_row = QHBoxLayout()
@@ -212,10 +198,6 @@ class ProcessedView(QWidget):
         pipeline_row.addWidget(
             self.status_label,
             1,
-        )
-
-        pipeline_row.addWidget(
-            self.next_button
         )
 
         # ==================================================
@@ -439,14 +421,6 @@ class ProcessedView(QWidget):
     # ======================================================
     # Pipeline controls
     # ======================================================
-
-    def set_next_enabled(
-        self,
-        enabled,
-    ):
-        self.next_button.setEnabled(
-            enabled
-        )
 
     def set_status(
         self,

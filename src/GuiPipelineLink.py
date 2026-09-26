@@ -1,30 +1,73 @@
 ''' GuiPipelineLink
-This is a pipeline link which is not config related. 
-This link provides an interface with Qt. 
+This is a pipeline link which is not config related.
+This link provides a non-blocking interface with Qt.
 '''
+
+import threading
 
 from PySide6.QtCore import (
     QObject,
     Signal,
+    Slot,
     Qt,
-    QSemaphore,
 )
 
 from src.PipelineLink import PipelineLink
 
 
 class _GuiSignals(QObject):
-    batch_ready = Signal(object)
+    batch_available = Signal()
+
+
+class _GuiBatchDispatcher(QObject):
+    """
+    GUI-thread dispatcher for the latest processed batch.
+
+    GuiPipelineLink itself is driven by the background pipeline thread.
+    This QObject is created on the Qt thread, so its queued slot can safely
+    hand the newest available batch to ControlWindow.
+    """
+
+    def __init__(
+        self,
+        pipeline_link,
+        control_window,
+    ):
+        super().__init__()
+
+        self.pipeline_link = pipeline_link
+        self.control_window = control_window
+
+    @Slot()
+    def deliver_latest_batch(
+        self,
+    ):
+        batch = (
+            self.pipeline_link
+            .take_latest_batch_for_gui()
+        )
+
+        if batch is None:
+            return
+
+        self.control_window.update_data(
+            batch
+        )
 
 
 class GuiPipelineLink(PipelineLink):
     """
-    Pipeline link which collects a fixed number of packets,
-    displays them in the GUI, then pauses until the user
-    requests the next batch.
+    Non-blocking observer link between the processing pipeline and Qt.
 
-    No packets are passed downstream while the current batch
-    is being inspected.
+    The link groups processed AudioBuffers into fixed-size inspection
+    batches. Once a batch is complete it publishes the newest batch to the
+    GUI, then immediately continues the callback pipeline.
+
+    GUI delivery is deliberately coalesced: while one Qt notification is
+    already pending, newer completed batches replace the older pending batch
+    instead of creating an unbounded queue of GUI updates. The cache remains
+    the durable output of batch precomputation; the GUI only observes the
+    latest useful inspection state.
     """
 
     INCLUDE_IN_PIPELINE_CONFIG = False
@@ -46,83 +89,104 @@ class GuiPipelineLink(PipelineLink):
 
         self.buffers = []
 
-        #
-        # Starts at zero:
-        #
-        # acquire() waits until the GUI calls release().
-        #
-        self._continue = QSemaphore(0)
+        # The processing thread writes these fields while the GUI thread
+        # consumes them. Only one queued Qt notification is allowed at a
+        # time, so a fast precompute run cannot flood the Qt event queue.
+        self._gui_batch_lock = threading.Lock()
+        self._latest_gui_batch = None
+        self._gui_notification_pending = False
 
-        #
-        # Signals are used so QWidget updates happen on
-        # the Qt GUI thread.
-        #
         self._signals = _GuiSignals()
 
-        self._signals.batch_ready.connect(
-            self.control_window.update_data,
+        # This dispatcher is constructed on the GUI thread. The queued
+        # connection therefore guarantees that ControlWindow is touched only
+        # from Qt's GUI thread.
+        self._dispatcher = _GuiBatchDispatcher(
+            pipeline_link=self,
+            control_window=self.control_window,
+        )
+
+        self._signals.batch_available.connect(
+            self._dispatcher.deliver_latest_batch,
             Qt.ConnectionType.QueuedConnection,
         )
 
-        #
-        # The control_window emits this when Next is pressed.
-        #
-        self.control_window.next_requested.connect(
-            self.continue_pipeline
+    def next_audio(
+        self,
+        packet,
+    ):
+        """
+        Observe processed packets without applying GUI backpressure.
+
+        Every packet is forwarded downstream immediately. In parallel, once
+        ``buffer_count`` packets have accumulated for inspection, that batch
+        is published as the newest GUI state and collection starts again.
+
+        There is no wait for user input and no downstream batching delay.
+        """
+
+        self.buffers.append(
+            packet
         )
 
-    def next_audio(self, packet):
-        """
-        Collect packets until a complete visualisation batch exists.
+        # This link is an observer, not a batching transport. Preserve normal
+        # callback timing by forwarding every packet immediately, regardless
+        # of when the GUI inspection batch becomes complete.
+        super().next_audio(
+            packet
+        )
 
-        Once full:
-            1. display batch
-            2. wait for user
-            3. forward entire batch downstream
-            4. begin collecting next batch
-        """
-
-        self.buffers.append(packet)
-
-        #
-        # Still collecting.
-        #
         if len(self.buffers) < self.buffer_count:
             return
 
-        #
-        # Complete batch.
-        #
         batch = self.buffers
         self.buffers = []
 
-        #
-        # Tell GUI to display it.
-        #
-        self._signals.batch_ready.emit(
+        self._publish_latest_batch(
             batch
         )
 
-        #
-        # STOP HERE until Next is pressed.
-        #
-        self._continue.acquire()
-
-        #
-        # User requested the next batch.
-        #
-        # Send the displayed buffers downstream,
-        # preserving their original order.
-        #
-        for packet in batch:
-            super().next_audio(packet)
-
-    def continue_pipeline(self):
+    def _publish_latest_batch(
+        self,
+        batch,
+    ):
         """
-        Release the pipeline after the user presses Next.
+        Store the newest completed batch and schedule at most one Qt event.
         """
 
-        self._continue.release()
+        should_notify = False
 
-    def configuration_parameters(self):
+        with self._gui_batch_lock:
+            self._latest_gui_batch = list(
+                batch
+            )
+
+            if not self._gui_notification_pending:
+                self._gui_notification_pending = True
+                should_notify = True
+
+        if should_notify:
+            self._signals.batch_available.emit()
+
+    def take_latest_batch_for_gui(
+        self,
+    ):
+        """
+        Return the newest pending GUI batch.
+
+        Called only by the GUI-thread dispatcher. Clearing the notification
+        flag here allows the pipeline thread to schedule one new notification
+        while ControlWindow renders the batch that was just taken.
+        """
+
+        with self._gui_batch_lock:
+            batch = self._latest_gui_batch
+            self._latest_gui_batch = None
+            self._gui_notification_pending = False
+
+        return batch
+
+    def configuration_parameters(
+        self,
+    ):
         return {}
