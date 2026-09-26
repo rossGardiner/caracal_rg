@@ -1,13 +1,5 @@
-import numpy as np
 import math
-
-from src.Spectrogram import (
-    Spectrogram
-)
-
-from src.EmbeddingSpaceVisualiser import (
-    EmbeddingSpaceVisualiser
-)
+import numpy as np
 
 from PySide6.QtCore import (
     Signal,
@@ -20,12 +12,7 @@ from PySide6.QtCore import (
 
 from PySide6.QtWidgets import (
     QMainWindow,
-    QDockWidget,
-    QToolBar,
-    QLabel,
-    QPushButton,
-    QSlider,
-    QComboBox
+    QSplitter,
 )
 
 from PySide6.QtMultimedia import (
@@ -37,30 +24,36 @@ from PySide6.QtMultimedia import (
 from src.AudioPacketSource import AudioPacketSource
 from src.AudioReader import AudioReader
 from src.AudioBuffer import AudioBuffer
+from src.BrowsingView import BrowsingView
+from src.ProcessedView import ProcessedView
+
 
 class ControlWindow(QMainWindow):
     """
-    Main visualisation controller.
+    Main application coordinator.
 
-    Responsibilities:
+    GUI ownership is split between:
 
-        - receive AudioBuffers from GuiPipelineLink
-        - manage the current batch
-        - control pipeline progression
-        - audio playback
-        - playback volume
-        - manage dockable visualisation widgets
+        BrowsingView
+            source recording navigation, source spectrogram,
+            playback controls
 
-    It deliberately does NOT know how to:
+        ProcessedView
+            processed embeddings, pipeline status, Next control
 
-        - calculate spectrograms
-        - calculate PCA
-        - draw embedding spaces
+    ControlWindow coordinates data loading, playback, and pipeline
+    progression without allowing the two views to share GUI state.
     """
 
     next_requested = Signal()
 
-    def __init__(self, audio_packet_source: AudioPacketSource, audio_reader: AudioReader, chunk_duration_s: float = 5.0, embedding_name="perch_v2"):
+    def __init__(
+        self,
+        audio_packet_source: AudioPacketSource,
+        audio_reader: AudioReader,
+        chunk_duration_s: float = 5.0,
+        embedding_name="perch_v2",
+    ):
         super().__init__()
 
         # ==================================================
@@ -68,7 +61,6 @@ class ControlWindow(QMainWindow):
         # ==================================================
 
         self.processed_buffers = []
-
         self._waiting_for_next = False
 
         # ==================================================
@@ -93,18 +85,18 @@ class ControlWindow(QMainWindow):
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
         )
+
         self.audio_reader = audio_reader
-        
+
         self.current_audio_packet = None
         self.current_chunk_index = 0
         self.current_num_chunks = 0
-        
+
         # ==================================================
         # Audio playback state
         # ==================================================
 
         self._audio_sink = None
-
         self._audio_buffer = None
 
         # ==================================================
@@ -116,365 +108,74 @@ class ControlWindow(QMainWindow):
         )
 
         self.resize(
-            1300,
+            1400,
             850,
         )
 
-        #
-        # Allow dock widgets to be freely rearranged.
-        #
-        self.setDockNestingEnabled(
-            True
-        )
-
-        self.setDockOptions(
-            QMainWindow.DockOption.AllowNestedDocks
-            | QMainWindow.DockOption.AllowTabbedDocks
-            | QMainWindow.DockOption.AnimatedDocks
-        )
-
         # ==================================================
-        # Visualisation components
+        # GUI components
         # ==================================================
 
-        self.spectrogram = (
-            Spectrogram()
+        self.browsing_view = BrowsingView(
+            audio_packets=self.audio_packets,
         )
 
-        self.embedding_visualiser = (
-            EmbeddingSpaceVisualiser(
-                embedding_name=embedding_name
-            )
+        self.processed_view = ProcessedView(
+            embedding_name=embedding_name,
         )
 
-        # ==================================================
-        # Spectrogram dock
-        # ==================================================
-
-        self.spectrogram_dock = (
-            QDockWidget(
-                "Spectrogram",
-                self,
-            )
-        )
-
-        self.spectrogram_dock.setWidget(
-            self.spectrogram
-        )
-
-        self.spectrogram_dock.setAllowedAreas(
-            Qt.DockWidgetArea.AllDockWidgetAreas
-        )
-
-        self.spectrogram_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-
-        # ==================================================
-        # Embedding dock
-        # ==================================================
-
-        self.embedding_dock = (
-            QDockWidget(
-                "Embedding Space",
-                self,
-            )
-        )
-
-        self.embedding_dock.setWidget(
-            self.embedding_visualiser
-        )
-
-        self.embedding_dock.setAllowedAreas(
-            Qt.DockWidgetArea.AllDockWidgetAreas
-        )
-
-        self.embedding_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-
-        # ==================================================
-        # Initial dock arrangement
-        # ==================================================
-
-        #
-        # Add both to the same area first.
-        #
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-            self.embedding_dock,
-        )
-
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-            self.spectrogram_dock,
-        )
-
-        #
-        # Initial arrangement:
-        #
-        #     Embedding space
-        #     ----------------
-        #     Spectrogram
-        #
-        # The user can drag either one anywhere afterwards.
-        #
-        self.splitDockWidget(
-            self.embedding_dock,
-            self.spectrogram_dock,
-            Qt.Orientation.Vertical,
-        )
-
-        # ==================================================
-        # View menu
-        # ==================================================
-
-        #
-        # If the user closes/hides a dock, these menu entries
-        # allow it to be shown again.
-        #
-        view_menu = (
-            self.menuBar()
-            .addMenu(
-                "View"
-            )
-        )
-
-        view_menu.addAction(
-            self.embedding_dock
-            .toggleViewAction()
-        )
-
-        view_menu.addAction(
-            self.spectrogram_dock
-            .toggleViewAction()
-        )
-
-        # ==================================================
-        # Playback toolbar
-        # ==================================================
-
-        self.toolbar = QToolBar(
-            "Playback",
-            self,
-        )
-
-        self.toolbar.setMovable(
-            False
-        )
-
-        self.addToolBar(
-            Qt.ToolBarArea.BottomToolBarArea,
-            self.toolbar,
-        )
-        # --------------------------------------------------
-        # Recording
-        # --------------------------------------------------
-
-        self.toolbar.addWidget(
-            QLabel(
-                "Recording:"
-            )
-        )
-
-        self.recording_selector = (
-            QComboBox()
-        )
-
-        for index, packet in enumerate(
-            self.audio_packets
-        ):
-            label = (
-                packet.display_name
-                or f"Recording {index + 1}"
-            )
-
-            self.recording_selector.addItem(
-                label,
-                userData=index,
-            )
-
-        self.recording_selector.currentIndexChanged.connect(
+        self.browsing_view.recording_selected.connect(
             self._recording_selected
         )
 
-        self.toolbar.addWidget(
-            self.recording_selector
-        )
-
-        self.toolbar.addSeparator()
-
-        # --------------------------------------------------
-        # Canonical chunk
-        # --------------------------------------------------
-
-        self.toolbar.addWidget(
-            QLabel(
-                "Chunk:"
-            )
-        )
-
-        self.chunk_slider = QSlider(
-            Qt.Orientation.Horizontal
-        )
-
-        self.chunk_slider.setMinimum(
-            0
-        )
-
-        self.chunk_slider.setMaximum(
-            0
-        )
-
-        self.chunk_slider.setSingleStep(
-            1
-        )
-
-        self.chunk_slider.setPageStep(
-            10
-        )
-
-        self.chunk_slider.setMinimumWidth(
-            300
-        )
-
-        self.chunk_slider.setEnabled(
-            False
-        )
-
-        self.chunk_slider.valueChanged.connect(
+        self.browsing_view.chunk_selected.connect(
             self._chunk_selected
         )
 
-        self.toolbar.addWidget(
-            self.chunk_slider
-        )
-
-        self.chunk_label = QLabel(
-            "No recording selected"
-        )
-
-        self.toolbar.addWidget(
-            self.chunk_label
-        )
-
-        self.toolbar.addSeparator()
-        # --------------------------------------------------
-        # Play
-        # --------------------------------------------------
-
-        self.play_button = (
-            QPushButton(
-                "Play"
-            )
-        )
-
-        self.play_button.clicked.connect(
+        self.browsing_view.play_requested.connect(
             self.play_audio
         )
 
-        self.toolbar.addWidget(
-            self.play_button
-        )
-
-        # --------------------------------------------------
-        # Stop
-        # --------------------------------------------------
-
-        self.stop_button = (
-            QPushButton(
-                "Stop"
-            )
-        )
-
-        self.stop_button.clicked.connect(
+        self.browsing_view.stop_requested.connect(
             self.stop_audio
         )
 
-        self.toolbar.addWidget(
-            self.stop_button
-        )
-
-        self.toolbar.addSeparator()
-
-        # --------------------------------------------------
-        # Volume
-        # --------------------------------------------------
-
-        self.volume_label = QLabel(
-            "Volume: 100%"
-        )
-
-        self.toolbar.addWidget(
-            self.volume_label
-        )
-
-        self.volume_slider = QSlider(
-            Qt.Orientation.Horizontal
-        )
-
-        #
-        # Playback-only digital gain:
-        #
-        #     100% = 1x
-        #     200% = 2x
-        #     500% = 5x
-        #
-        self.volume_slider.setRange(
-            0,
-            500,
-        )
-
-        self.volume_slider.setValue(
-            100
-        )
-
-        self.volume_slider.setSingleStep(
-            10
-        )
-
-        self.volume_slider.setPageStep(
-            25
-        )
-
-        self.volume_slider.setMaximumWidth(
-            250
-        )
-
-        self.volume_slider.valueChanged.connect(
-            self._volume_changed
-        )
-
-        self.toolbar.addWidget(
-            self.volume_slider
-        )
-
-        self.toolbar.addSeparator()
-
-        # --------------------------------------------------
-        # Next
-        # --------------------------------------------------
-
-        self.next_button = (
-            QPushButton(
-                "Next"
-            )
-        )
-
-        self.next_button.clicked.connect(
+        self.processed_view.next_requested.connect(
             self.next_batch
         )
 
-        self.toolbar.addWidget(
-            self.next_button
+        # ==================================================
+        # Main layout
+        # ==================================================
+
+        self.main_splitter = QSplitter(
+            Qt.Orientation.Horizontal
+        )
+
+        self.main_splitter.addWidget(
+            self.browsing_view
+        )
+
+        self.main_splitter.addWidget(
+            self.processed_view
+        )
+
+        self.main_splitter.setStretchFactor(
+            0,
+            1,
+        )
+
+        self.main_splitter.setStretchFactor(
+            1,
+            1,
+        )
+
+        self.setCentralWidget(
+            self.main_splitter
         )
 
         # ==================================================
-        # Initial control state
+        # Initial state
         # ==================================================
 
         self._set_browsing_controls_enabled(
@@ -490,21 +191,12 @@ class ControlWindow(QMainWindow):
                 0
             )
         else:
-            self.recording_selector.setEnabled(
-                False
-            )
-
-            self.chunk_slider.setEnabled(
-                False
-            )
-
-            self.chunk_label.setText(
-                "No recordings available"
-            )
+            self.browsing_view.set_no_recordings()
 
         self.statusBar().showMessage(
-            "Waiting for audio..."
+            "Ready"
         )
+
     # ======================================================
     # Pipeline input
     # ======================================================
@@ -515,9 +207,9 @@ class ControlWindow(QMainWindow):
         buffers,
     ):
         """
-        Receive one batch from GuiPipelineLink.
+        Receive one processed batch from GuiPipelineLink.
 
-        The batch may contain any number of AudioBuffers.
+        Processed data is routed only to ProcessedView.
         """
 
         buffers = list(
@@ -527,27 +219,12 @@ class ControlWindow(QMainWindow):
         if not buffers:
             return
 
-        self.processed_buffers = (
-            buffers
-        )
+        self.processed_buffers = buffers
+        self._waiting_for_next = True
 
-        self._waiting_for_next = (
-            True
-        )
-
-        # --------------------------------------------------
-        # Delegate visualisation
-        # --------------------------------------------------
-
-        # The existing spectrogram belongs to browsing.
-        # Processed pipeline data must not replace it.
-        self.embedding_visualiser.add_buffers(
+        self.processed_view.add_buffers(
             self.processed_buffers
         )
-
-        # --------------------------------------------------
-        # Controls
-        # --------------------------------------------------
 
         self._set_pipeline_controls_enabled(
             True
@@ -569,15 +246,13 @@ class ControlWindow(QMainWindow):
         if not self._waiting_for_next:
             return
 
-        self._waiting_for_next = (
-            False
-        )
+        self._waiting_for_next = False
 
         self._set_pipeline_controls_enabled(
             False
         )
 
-        self.statusBar().showMessage(
+        self.processed_view.set_status(
             "Loading next batch..."
         )
 
@@ -603,26 +278,16 @@ class ControlWindow(QMainWindow):
             return None, None
 
         sample_rate = (
-            buffers[
-                0
-            ].sample_rate
+            buffers[0].sample_rate
         )
 
         first_waveform = (
-            buffers[
-                0
-            ].waveform
+            buffers[0].waveform
         )
 
-        #
-        # Determine expected channel count.
-        #
         if first_waveform.ndim == 1:
-
             channel_count = 1
-
         else:
-
             channel_count = (
                 first_waveform.shape[1]
             )
@@ -632,7 +297,6 @@ class ControlWindow(QMainWindow):
         for buffer in buffers:
 
             if buffer.sample_rate != sample_rate:
-
                 raise ValueError(
                     "Visualiser received buffers "
                     "with different sample rates"
@@ -643,20 +307,13 @@ class ControlWindow(QMainWindow):
                 dtype=np.float32,
             )
 
-            #
-            # Normalise mono representation to:
-            #
-            #     samples x 1
-            #
             if waveform.ndim == 1:
-
                 waveform = waveform[
                     :,
-                    None
+                    None,
                 ]
 
             if waveform.shape[1] != channel_count:
-
                 raise ValueError(
                     "Visualiser received buffers "
                     "with different channel counts"
@@ -677,28 +334,16 @@ class ControlWindow(QMainWindow):
         )
 
     # ======================================================
-    # Volume
+    # Playback
     # ======================================================
-
-    def _volume_changed(
-        self,
-        value,
-    ):
-        self.volume_label.setText(
-            f"Volume: {value}%"
-        )
 
     def _playback_gain(
         self,
     ):
         return (
-            self.volume_slider.value()
+            self.browsing_view.volume_percent()
             / 100.0
         )
-
-    # ======================================================
-    # Playback
-    # ======================================================
 
     def play_audio(
         self,
@@ -714,12 +359,8 @@ class ControlWindow(QMainWindow):
 
         self.stop_audio()
 
-        #
-        # Always make a copy.
-        #
-        # Playback gain must never alter the pipeline's actual
-        # AudioBuffer data.
-        #
+        # Always make a copy. Playback gain must never alter
+        # the source AudioBuffer data.
         waveform = np.array(
             waveform,
             dtype=np.float32,
@@ -730,17 +371,10 @@ class ControlWindow(QMainWindow):
             waveform.shape[1]
         )
 
-        # --------------------------------------------------
-        # Playback-only amplification
-        # --------------------------------------------------
-
         waveform *= (
             self._playback_gain()
         )
 
-        #
-        # Float PCM must remain inside [-1, 1].
-        #
         waveform = np.clip(
             waveform,
             -1.0,
@@ -755,9 +389,7 @@ class ControlWindow(QMainWindow):
         # Qt audio format
         # ==================================================
 
-        audio_format = (
-            QAudioFormat()
-        )
+        audio_format = QAudioFormat()
 
         audio_format.setSampleRate(
             sample_rate
@@ -772,14 +404,12 @@ class ControlWindow(QMainWindow):
         )
 
         device = (
-            QMediaDevices
-            .defaultAudioOutput()
+            QMediaDevices.defaultAudioOutput()
         )
 
         if not device.isFormatSupported(
             audio_format
         ):
-
             self.statusBar().showMessage(
                 f"Unsupported audio format: "
                 f"{sample_rate} Hz, "
@@ -792,10 +422,8 @@ class ControlWindow(QMainWindow):
         # In-memory audio stream
         # ==================================================
 
-        self._audio_buffer = (
-            QBuffer(
-                self
-            )
+        self._audio_buffer = QBuffer(
+            self
         )
 
         self._audio_buffer.setData(
@@ -812,12 +440,10 @@ class ControlWindow(QMainWindow):
         # Output
         # ==================================================
 
-        self._audio_sink = (
-            QAudioSink(
-                device,
-                audio_format,
-                self,
-            )
+        self._audio_sink = QAudioSink(
+            device,
+            audio_format,
+            self,
         )
 
         self._audio_sink.setVolume(
@@ -838,27 +464,22 @@ class ControlWindow(QMainWindow):
             f"{len(self.browsing_buffers)} browsing buffer(s)"
             f" | {duration:.2f}s"
             f" | volume "
-            f"{self.volume_slider.value()}%"
+            f"{self.browsing_view.volume_percent()}%"
         )
 
     def stop_audio(
         self,
     ):
         if self._audio_sink is not None:
-
             self._audio_sink.reset()
-
             self._audio_sink.deleteLater()
-
             self._audio_sink = None
 
         if self._audio_buffer is not None:
-
             self._audio_buffer.close()
-
             self._audio_buffer.deleteLater()
-
             self._audio_buffer = None
+
     # ======================================================
     # Recording navigation
     # ======================================================
@@ -887,18 +508,18 @@ class ControlWindow(QMainWindow):
                 False
             )
 
-            self.chunk_slider.setEnabled(
-                False
+            self.browsing_view.set_chunk_range(
+                0
             )
 
-            self.chunk_label.setText(
+            self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
 
             return
 
         packet_index = (
-            self.recording_selector.itemData(
+            self.browsing_view.recording_packet_index(
                 selector_index
             )
         )
@@ -907,10 +528,7 @@ class ControlWindow(QMainWindow):
             packet_index
         ]
 
-        self.current_audio_packet = (
-            packet
-        )
-
+        self.current_audio_packet = packet
         self.current_chunk_index = 0
 
         if packet.duration is None:
@@ -928,35 +546,13 @@ class ControlWindow(QMainWindow):
                 "Selected AudioPacket has no canonical chunks"
             )
 
-        #
-        # Prevent changing the slider range/value from firing a
-        # spurious chunk-selection event while recording state
-        # is still being updated.
-        #
-        self.chunk_slider.blockSignals(
-            True
-        )
-
-        self.chunk_slider.setRange(
-            0,
-            self.current_num_chunks - 1,
-        )
-
-        self.chunk_slider.setValue(
-            0
-        )
-
-        self.chunk_slider.blockSignals(
-            False
-        )
-
-        self.chunk_slider.setEnabled(
-            True
+        self.browsing_view.set_chunk_range(
+            self.current_num_chunks
         )
 
         self._update_chunk_label()
         self._load_selected_chunk()
-    
+
     def _chunk_selected(
         self,
         chunk_index: int,
@@ -968,13 +564,11 @@ class ControlWindow(QMainWindow):
         if self.current_audio_packet is None:
             return
 
-        self.current_chunk_index = (
-            chunk_index
-        )
+        self.current_chunk_index = chunk_index
 
         self._update_chunk_label()
         self._load_selected_chunk()
-    
+
     def _load_selected_chunk(
         self,
     ):
@@ -1011,23 +605,19 @@ class ControlWindow(QMainWindow):
             audio_buffer
         ]
 
-        self.spectrogram.set_buffers(
+        self.browsing_view.set_buffers(
             self.browsing_buffers
         )
 
-        self.play_button.setEnabled(
+        self._set_browsing_controls_enabled(
             True
         )
 
-        self.stop_button.setEnabled(
-            True
-        )
-    
     def _update_chunk_label(
         self,
     ):
         if self.current_audio_packet is None:
-            self.chunk_label.setText(
+            self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
 
@@ -1044,11 +634,11 @@ class ControlWindow(QMainWindow):
             self.current_audio_packet.duration,
         )
 
-        self.chunk_label.setText(
+        self.browsing_view.set_chunk_label(
             f"{self.current_chunk_index} "
             f"({start_s:.1f}s - {end_s:.1f}s)"
         )
-        
+
     # ======================================================
     # Controls
     # ======================================================
@@ -1057,11 +647,7 @@ class ControlWindow(QMainWindow):
         self,
         enabled,
     ):
-        self.play_button.setEnabled(
-            enabled
-        )
-
-        self.stop_button.setEnabled(
+        self.browsing_view.set_browsing_controls_enabled(
             enabled
         )
 
@@ -1069,20 +655,19 @@ class ControlWindow(QMainWindow):
         self,
         enabled,
     ):
-        self.next_button.setEnabled(
+        self.processed_view.set_next_enabled(
             enabled
         )
 
     # ======================================================
-    # Status
+    # Processed status
     # ======================================================
 
     def _update_pipeline_status(
         self,
     ):
         if not self.processed_buffers:
-
-            self.statusBar().showMessage(
+            self.processed_view.set_status(
                 "Waiting for processed audio..."
             )
 
@@ -1118,11 +703,12 @@ class ControlWindow(QMainWindow):
         )
 
         total_embeddings = len(
-            self.embedding_visualiser
+            self.processed_view
+            .embedding_visualiser
             .embedding_vectors
         )
 
-        self.statusBar().showMessage(
+        self.processed_view.set_status(
             f"{len(self.processed_buffers)} processed buffer(s)"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
@@ -1140,16 +726,10 @@ class ControlWindow(QMainWindow):
     ):
         self.stop_audio()
 
-        #
-        # Make sure the worker thread isn't permanently stuck
+        # Make sure the worker thread is not permanently stuck
         # waiting on GuiPipelineLink if the application closes.
-        #
         if self._waiting_for_next:
-
-            self._waiting_for_next = (
-                False
-            )
-
+            self._waiting_for_next = False
             self.next_requested.emit()
 
         super().closeEvent(
