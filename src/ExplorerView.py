@@ -12,8 +12,6 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QMainWindow,
     QStatusBar,
-    QVBoxLayout,
-    QWidget,
 )
 
 from PySide6.QtMultimedia import (
@@ -28,14 +26,14 @@ from src.ExplorerModel import ExplorerModel
 from src.ProcessedView import ProcessedView
 
 
-class ExplorerView(QWidget):
+class ExplorerView(QMainWindow):
     """Compose the interactive explorer views and Qt audio playback.
 
     Explorer domain state lives in ``ExplorerModel`` and asynchronous
-    orchestration lives in ``ExplorerController``. ``ExplorerView`` is an
-    ordinary QWidget suitable for embedding in the application tab shell. A
-    private QMainWindow is used only because Qt requires one to host movable
-    and floatable QDockWidgets.
+    orchestration lives in ``ExplorerController``. ``ExplorerView`` is a
+    QMainWindow used as an embeddable tab page. QMainWindow is itself a QWidget,
+    so the application shell can host it directly while retaining native Qt
+    dock-widget behaviour.
     """
 
     def __init__(
@@ -65,36 +63,15 @@ class ExplorerView(QWidget):
         # View composition
         # ==================================================
 
-        layout = QVBoxLayout(
-            self
-        )
-        layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0,
-        )
-
-        # QDockWidget can only be managed by QMainWindow. Keep that Qt
-        # implementation detail private so the MVC-facing explorer remains a
-        # normal embeddable QWidget.
-        self._dock_host = QMainWindow(
-            self
-        )
-        self._dock_host.setDockNestingEnabled(
+        self.setDockNestingEnabled(
             True
         )
 
         self.status_bar = QStatusBar(
             self
         )
-
-        layout.addWidget(
-            self._dock_host,
-            stretch=1,
-        )
-        layout.addWidget(
-            self.status_bar,
+        self.setStatusBar(
+            self.status_bar
         )
 
         # ==================================================
@@ -163,16 +140,16 @@ class ExplorerView(QWidget):
             widget=self.processed_view,
         )
 
-        self._dock_host.addDockWidget(
+        self.addDockWidget(
             Qt.DockWidgetArea.LeftDockWidgetArea,
             self.browsing_dock,
         )
-        self._dock_host.addDockWidget(
+        self.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea,
             self.processed_dock,
         )
 
-        self._dock_host.resizeDocks(
+        self.resizeDocks(
             [
                 self.browsing_dock,
                 self.processed_dock,
@@ -212,7 +189,7 @@ class ExplorerView(QWidget):
 
         dock = QDockWidget(
             title,
-            self._dock_host,
+            self,
         )
         dock.setObjectName(
             object_name
