@@ -9,6 +9,7 @@ from src.AudioReader import AudioReader
 from src.CaracalStreamer import CaracalStreamer
 from src.ControlWindow import ControlWindow
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
+from src.ExplorerModel import ExplorerModel
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
 from src.PipelineController import PipelineController
@@ -55,13 +56,17 @@ def main():
         is_caracal=True
     )
 
-    explorer_view = ControlWindow(
+    explorer_model = ExplorerModel(
         audio_packet_source=source,
         audio_reader=audio_reader,
         chunk_grid=loader.chunk_grid,
         embedding_cache=cache_loader.cache,
         pipeline=pipeline,
         embedding_name=embeddings_creator.embedding_name,
+    )
+
+    explorer_view = ControlWindow(
+        model=explorer_model,
     )
 
     pipeline_definitions = get_pipeline_definitions()
@@ -92,6 +97,7 @@ def main():
 
     # Keep the MVC objects alive for the duration of the Qt event loop.
     application_objects = (
+        explorer_model,
         pipeline_run_model,
         pipeline_runner,
         pipeline_controller,

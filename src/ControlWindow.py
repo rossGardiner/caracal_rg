@@ -21,15 +21,12 @@ from PySide6.QtMultimedia import (
     QMediaDevices,
 )
 
-from src.AudioPacketSource import AudioPacketSource
-from src.AudioReader import AudioReader
-from src.CanonicalChunkGrid import CanonicalChunkGrid
 from src.EmbeddingRequest import EmbeddingRequest
 from src.BrowsingView import BrowsingView
 from src.ProcessedView import ProcessedView
 from src.LatestJobRunner import LatestJobRunner
 from src.SpectrogramData import calculate_spectrogram
-from src.Pipeline import Pipeline
+from src.ExplorerModel import ExplorerModel
 
 
 class ControlWindow(QMainWindow):
@@ -52,84 +49,35 @@ class ControlWindow(QMainWindow):
 
     def __init__(
         self,
-        audio_packet_source: AudioPacketSource,
-        audio_reader: AudioReader,
-        chunk_grid: CanonicalChunkGrid,
-        embedding_cache,
-        pipeline: Pipeline,
-        embedding_name="perch_v2",
+        model: ExplorerModel,
     ):
         super().__init__()
 
         self._is_shutdown = False
 
-        # ==================================================
-        # Processed pipeline state
-        # ==================================================
+        if not isinstance(
+            model,
+            ExplorerModel,
+        ):
+            raise TypeError(
+                "model must be an ExplorerModel"
+            )
 
-        self.processed_buffers = []
-        self.current_processed_buffer_index = 0
+        self.model = model
+
+        # Request-generation counters belong to orchestration rather than
+        # explorer state. They stay here until MVC7 moves that orchestration
+        # into ExplorerController.
         self._processed_spectrogram_request_id = 0
-
-        # ==================================================
-        # Recording browsing state
-        # ==================================================
-
-        self.browsing_buffers = []
-
-        # Compatible cached embeddings are loaded independently from
-        # source-audio browsing. Results use their own request id so a
-        # slow cache scan for a previous recording cannot replace the
-        # currently selected recording's PCA dataset.
         self._embedding_cache_request_id = 0
-
-        # On-demand embedding requests use a separate monotonically
-        # increasing id. The dictionary keeps any embeddings produced while a
-        # recording-level cache scan is still in flight so they can be merged
-        # back after that scan replaces the PCA dataset.
         self._interactive_embedding_request_id = 0
-        self._interactive_embeddings_by_key = {}
 
-        if not isinstance(
-            chunk_grid,
-            CanonicalChunkGrid,
-        ):
-            raise TypeError(
-                "chunk_grid must be a CanonicalChunkGrid"
-            )
-
-        self.audio_packet_source = (
-            audio_packet_source
-        )
-
-        if not isinstance(
-            pipeline,
-            Pipeline,
-        ):
-            raise TypeError(
-                "pipeline must be a Pipeline"
-            )
-
-        self.chunk_grid = chunk_grid
-        self.pipeline = pipeline
-        self.pipeline_hash = pipeline.get_config_hash()
-        self.embedding_name = str(
-            embedding_name
-        )
-
-        self.audio_packets = (
-            self.audio_packet_source.get_audio_packets()
-        )
-
-        self.current_audio_packet = None
-        self.current_chunk_index = 0
-        self.current_num_chunks = 0
-
-        self.embedding_cache = embedding_cache
-        self.audio_reader = audio_reader
+        # On-demand embedding processing is still orchestrated by this
+        # coordinator for now. MVC7 will move job ownership and orchestration
+        # into ExplorerController; the domain state already lives in the model.
         self.embedding_request = EmbeddingRequest(
-            cache=self.embedding_cache,
-            pipeline=self.pipeline,
+            cache=self.model.embedding_cache,
+            pipeline=self.model.pipeline,
         )
 
         # Background execution is a GUI policy, not a domain abstraction.
@@ -222,11 +170,11 @@ class ControlWindow(QMainWindow):
         # ==================================================
 
         self.browsing_view = BrowsingView(
-            audio_packets=self.audio_packets,
+            audio_packets=self.model.audio_packets,
         )
 
         self.processed_view = ProcessedView(
-            embedding_name=self.embedding_name,
+            embedding_name=self.model.embedding_name,
         )
 
         self.browsing_view.recording_selected.connect(
@@ -313,7 +261,7 @@ class ControlWindow(QMainWindow):
             False
         )
 
-        if self.audio_packets:
+        if self.model.audio_packets:
             self._recording_selected(
                 0
             )
@@ -384,8 +332,8 @@ class ControlWindow(QMainWindow):
             "processed"
         )
 
-        self.processed_buffers = buffers
-        self.current_processed_buffer_index = 0
+        self.model.processed_buffers = buffers
+        self.model.current_processed_buffer_index = 0
         # The processed-audio inspector always shows the live batch,
         # but the PCA view is scoped to the recording selected on the
         # browsing side. Only matching chunks are merged into it.
@@ -396,7 +344,7 @@ class ControlWindow(QMainWindow):
         matching_buffers = [
             buffer
             for buffer
-            in self.processed_buffers
+            in self.model.processed_buffers
             if buffer.recording_id
             == selected_recording_id
         ]
@@ -496,13 +444,13 @@ class ControlWindow(QMainWindow):
         """Play the currently loaded source/browsing audio."""
 
         self._play_buffers(
-            buffers=self.browsing_buffers,
+            buffers=self.model.browsing_buffers,
             volume_percent=(
                 self.browsing_view.volume_percent()
             ),
             playback_source="browsing",
             description=(
-                f"{len(self.browsing_buffers)} browsing buffer(s)"
+                f"{len(self.model.browsing_buffers)} browsing buffer(s)"
             ),
         )
 
@@ -521,7 +469,7 @@ class ControlWindow(QMainWindow):
         if audio_buffer.chunk_index is None:
             description = (
                 "processed buffer "
-                f"{self.current_processed_buffer_index + 1}"
+                f"{self.model.current_processed_buffer_index + 1}"
             )
         else:
             description = (
@@ -723,19 +671,7 @@ class ControlWindow(QMainWindow):
     def _current_processed_buffer(
         self,
     ):
-        if not self.processed_buffers:
-            return None
-
-        if not (
-            0
-            <= self.current_processed_buffer_index
-            < len(self.processed_buffers)
-        ):
-            return None
-
-        return self.processed_buffers[
-            self.current_processed_buffer_index
-        ]
+        return self.model.current_processed_buffer
 
     @Slot(int)
     def _processed_buffer_selected(
@@ -755,14 +691,14 @@ class ControlWindow(QMainWindow):
         and request its spectrogram without blocking the GUI thread.
         """
 
-        if not self.processed_buffers:
+        if not self.model.processed_buffers:
             self.processed_view.clear_processed_audio()
             return
 
         if not (
             0
             <= buffer_index
-            < len(self.processed_buffers)
+            < len(self.model.processed_buffers)
         ):
             return
 
@@ -770,7 +706,7 @@ class ControlWindow(QMainWindow):
             "processed"
         )
 
-        self.current_processed_buffer_index = (
+        self.model.current_processed_buffer_index = (
             buffer_index
         )
 
@@ -781,7 +717,7 @@ class ControlWindow(QMainWindow):
         self.processed_view.set_buffer_selection(
             index=buffer_index,
             buffer_count=len(
-                self.processed_buffers
+                self.model.processed_buffers
             ),
             audio_buffer=audio_buffer,
         )
@@ -856,20 +792,20 @@ class ControlWindow(QMainWindow):
         if (
             selector_index < 0
             or selector_index >= len(
-                self.audio_packets
+                self.model.audio_packets
             )
         ):
-            self.current_audio_packet = None
-            self.current_chunk_index = 0
-            self.current_num_chunks = 0
-            self.browsing_buffers = []
+            self.model.current_audio_packet = None
+            self.model.current_chunk_index = 0
+            self.model.current_num_chunks = 0
+            self.model.browsing_buffers = []
 
             # Invalidate any result already being loaded for the
             # previous selection.
             self._browsing_request_id += 1
             self._embedding_cache_request_id += 1
             self._interactive_embedding_request_id += 1
-            self._interactive_embeddings_by_key.clear()
+            self.model.interactive_embeddings_by_key.clear()
 
             self.processed_view.clear_recording_embeddings(
                 "No recording selected"
@@ -901,13 +837,13 @@ class ControlWindow(QMainWindow):
             )
         )
 
-        packet = self.audio_packets[
+        packet = self.model.audio_packets[
             packet_index
         ]
 
-        self.current_audio_packet = packet
-        self.current_chunk_index = 0
-        self._interactive_embeddings_by_key.clear()
+        self.model.current_audio_packet = packet
+        self.model.current_chunk_index = 0
+        self.model.interactive_embeddings_by_key.clear()
 
         self.processed_view.set_selected_embedding_status(
             "Selected chunk embedding: waiting for source audio..."
@@ -918,19 +854,19 @@ class ControlWindow(QMainWindow):
                 "Selected AudioPacket has no duration"
             )
 
-        self.current_num_chunks = (
-            self.chunk_grid.chunk_count(
+        self.model.current_num_chunks = (
+            self.model.chunk_grid.chunk_count(
                 packet.duration
             )
         )
 
-        if self.current_num_chunks <= 0:
+        if self.model.current_num_chunks <= 0:
             raise ValueError(
                 "Selected AudioPacket has no canonical chunks"
             )
 
         self.browsing_view.set_chunk_range(
-            self.current_num_chunks
+            self.model.current_num_chunks
         )
 
         self._request_cached_embeddings()
@@ -940,10 +876,7 @@ class ControlWindow(QMainWindow):
     def _selected_recording_id(
         self,
     ):
-        if self.current_audio_packet is None:
-            return None
-
-        return self.current_audio_packet.recording_id
+        return self.model.selected_recording_id
 
     def _request_cached_embeddings(
         self,
@@ -973,16 +906,16 @@ class ControlWindow(QMainWindow):
             return
 
         self.processed_view.clear_recording_embeddings(
-            f"Loading cached {self.embedding_name!r} embeddings..."
+            f"Loading cached {self.model.embedding_name!r} embeddings..."
         )
 
         self.embedding_cache_jobs.submit(
             request_id,
             partial(
-                self.embedding_cache.list_embeddings,
+                self.model.embedding_cache.list_embeddings,
                 recording_id=recording_id,
-                pipeline_hash=self.pipeline_hash,
-                embedding_name=self.embedding_name,
+                pipeline_hash=self.model.pipeline_hash,
+                embedding_name=self.model.embedding_name,
             ),
         )
 
@@ -1002,9 +935,9 @@ class ControlWindow(QMainWindow):
             embeddings
         )
 
-        if self._interactive_embeddings_by_key:
+        if self.model.interactive_embeddings_by_key:
             self.processed_view.add_embeddings(
-                self._interactive_embeddings_by_key.values()
+                self.model.interactive_embeddings_by_key.values()
             )
 
         # A live pipeline batch may have arrived while the cache was
@@ -1017,7 +950,7 @@ class ControlWindow(QMainWindow):
         matching_buffers = [
             buffer
             for buffer
-            in self.processed_buffers
+            in self.model.processed_buffers
             if buffer.recording_id
             == selected_recording_id
         ]
@@ -1078,7 +1011,7 @@ class ControlWindow(QMainWindow):
             int(chunk_index),
         )
 
-        self._interactive_embeddings_by_key[
+        self.model.interactive_embeddings_by_key[
             key
         ] = embedding
 
@@ -1124,10 +1057,10 @@ class ControlWindow(QMainWindow):
         Select one canonical chunk within the current recording.
         """
 
-        if self.current_audio_packet is None:
+        if self.model.current_audio_packet is None:
             return
 
-        self.current_chunk_index = chunk_index
+        self.model.current_chunk_index = chunk_index
 
         self._update_chunk_label()
         self._request_selected_chunk()
@@ -1143,7 +1076,7 @@ class ControlWindow(QMainWindow):
         a request to the background job runner.
         """
 
-        if self.current_audio_packet is None:
+        if self.model.current_audio_packet is None:
             return
 
         self._stop_audio_if_source(
@@ -1153,16 +1086,16 @@ class ControlWindow(QMainWindow):
         # The previous audio/spectrogram no longer represents the
         # slider position. Clear it immediately while the new request
         # is loading.
-        self.browsing_buffers = []
+        self.model.browsing_buffers = []
         self.browsing_view.clear_spectrogram()
 
         (
             start_s,
             end_s,
-        ) = self.chunk_grid.chunk_bounds(
-            self.current_chunk_index,
+        ) = self.model.chunk_grid.chunk_bounds(
+            self.model.current_chunk_index,
             total_duration_s=(
-                self.current_audio_packet.duration
+                self.model.current_audio_packet.duration
             ),
         )
 
@@ -1175,7 +1108,7 @@ class ControlWindow(QMainWindow):
 
         self.processed_view.set_selected_embedding_status(
             f"Selected chunk embedding: waiting for chunk "
-            f"{self.current_chunk_index} audio..."
+            f"{self.model.current_chunk_index} audio..."
         )
 
         # Do not allow playback of the previously loaded chunk while
@@ -1186,15 +1119,15 @@ class ControlWindow(QMainWindow):
         )
 
         self.statusBar().showMessage(
-            f"Loading chunk {self.current_chunk_index}..."
+            f"Loading chunk {self.model.current_chunk_index}..."
         )
 
         self.browsing_audio_jobs.submit(
             request_id,
             partial(
-                self.audio_reader.read_buffer,
-                packet=self.current_audio_packet,
-                chunk_index=self.current_chunk_index,
+                self.model.audio_reader.read_buffer,
+                packet=self.model.current_audio_packet,
+                chunk_index=self.model.current_chunk_index,
                 start_s=start_s,
                 duration_s=(end_s - start_s),
             ),
@@ -1220,7 +1153,7 @@ class ControlWindow(QMainWindow):
         ):
             return
 
-        self.browsing_buffers = [
+        self.model.browsing_buffers = [
             audio_buffer
         ]
 
@@ -1281,7 +1214,7 @@ class ControlWindow(QMainWindow):
         )
 
         self.statusBar().showMessage(
-            f"Loaded chunk {self.current_chunk_index}"
+            f"Loaded chunk {self.model.current_chunk_index}"
         )
 
     @Slot(int, str)
@@ -1323,7 +1256,7 @@ class ControlWindow(QMainWindow):
         ):
             return
 
-        self.browsing_buffers = []
+        self.model.browsing_buffers = []
         self.browsing_view.clear_spectrogram()
 
         self._set_browsing_controls_enabled(
@@ -1341,7 +1274,7 @@ class ControlWindow(QMainWindow):
     def _update_chunk_label(
         self,
     ):
-        if self.current_audio_packet is None:
+        if self.model.current_audio_packet is None:
             self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
@@ -1353,15 +1286,15 @@ class ControlWindow(QMainWindow):
         (
             start_s,
             end_s,
-        ) = self.chunk_grid.chunk_bounds(
-            self.current_chunk_index,
+        ) = self.model.chunk_grid.chunk_bounds(
+            self.model.current_chunk_index,
             total_duration_s=(
-                self.current_audio_packet.duration
+                self.model.current_audio_packet.duration
             ),
         )
 
         self.browsing_view.set_chunk_label(
-            f"{self.current_chunk_index} "
+            f"{self.model.current_chunk_index} "
             f"({start_s:.1f}s - {end_s:.1f}s)"
         )
 
@@ -1384,7 +1317,7 @@ class ControlWindow(QMainWindow):
     def _update_pipeline_status(
         self,
     ):
-        if not self.processed_buffers:
+        if not self.model.processed_buffers:
             self.processed_view.set_status(
                 "Waiting for processed audio..."
             )
@@ -1392,7 +1325,7 @@ class ControlWindow(QMainWindow):
             return
 
         first_buffer = (
-            self.processed_buffers[0]
+            self.model.processed_buffers[0]
         )
 
         sample_rate = (
@@ -1412,7 +1345,7 @@ class ControlWindow(QMainWindow):
 
         total_samples = sum(
             len(buffer.waveform)
-            for buffer in self.processed_buffers
+            for buffer in self.model.processed_buffers
         )
 
         duration = (
@@ -1427,7 +1360,7 @@ class ControlWindow(QMainWindow):
         )
 
         self.processed_view.set_status(
-            f"Latest batch: {len(self.processed_buffers)} processed buffer(s)"
+            f"Latest batch: {len(self.model.processed_buffers)} processed buffer(s)"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
             f" | {channel_count} channel(s)"
