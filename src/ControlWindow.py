@@ -11,8 +11,8 @@ from PySide6.QtCore import (
 )
 
 from PySide6.QtWidgets import (
+    QDockWidget,
     QMainWindow,
-    QSplitter,
 )
 
 from PySide6.QtMultimedia import (
@@ -258,33 +258,51 @@ class ControlWindow(QMainWindow):
         )
 
         # ==================================================
-        # Main layout
+        # Dockable explorer panes
         # ==================================================
 
-        self.main_splitter = QSplitter(
-            Qt.Orientation.Horizontal
+        # Browsing and processed views are peers: either can be moved to a
+        # different dock area or floated into its own top-level window.
+        # They are deliberately not closable yet so a pane cannot disappear
+        # accidentally during normal exploration.
+        self.setDockNestingEnabled(
+            True
         )
 
-        self.main_splitter.addWidget(
-            self.browsing_view
+        self.browsing_dock = self._create_dock(
+            title="Source audio",
+            object_name="source_audio_dock",
+            widget=self.browsing_view,
         )
 
-        self.main_splitter.addWidget(
-            self.processed_view
+        self.processed_dock = self._create_dock(
+            title="Processed audio and embeddings",
+            object_name="processed_audio_dock",
+            widget=self.processed_view,
         )
 
-        self.main_splitter.setStretchFactor(
-            0,
-            1,
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            self.browsing_dock,
         )
 
-        self.main_splitter.setStretchFactor(
-            1,
-            1,
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.processed_dock,
         )
 
-        self.setCentralWidget(
-            self.main_splitter
+        # Start with the same roughly 50/50 arrangement as the old splitter.
+        # The user can immediately drag either dock by its title bar.
+        self.resizeDocks(
+            [
+                self.browsing_dock,
+                self.processed_dock,
+            ],
+            [
+                700,
+                700,
+            ],
+            Qt.Orientation.Horizontal,
         )
 
         # ==================================================
@@ -305,6 +323,38 @@ class ControlWindow(QMainWindow):
         self.statusBar().showMessage(
             "Ready"
         )
+
+    def _create_dock(
+        self,
+        title: str,
+        object_name: str,
+        widget,
+    ) -> QDockWidget:
+        """Wrap an explorer pane in a movable, floatable dock."""
+
+        dock = QDockWidget(
+            title,
+            self,
+        )
+
+        dock.setObjectName(
+            object_name
+        )
+
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.AllDockWidgetAreas
+        )
+
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+
+        dock.setWidget(
+            widget
+        )
+
+        return dock
 
     # ======================================================
     # Pipeline input
