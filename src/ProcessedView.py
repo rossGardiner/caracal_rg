@@ -405,6 +405,15 @@ class ProcessedView(QWidget):
             str(text)
         )
 
+    def embedding_count(
+        self,
+    ):
+        """Return the number of embeddings currently represented by the view."""
+
+        return len(
+            self.embedding_visualiser.embedding_vectors
+        )
+
     def add_buffers(
         self,
         buffers,
