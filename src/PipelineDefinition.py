@@ -1,21 +1,18 @@
 """Plain, serialisable descriptions of pipelines offered by the application."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import json
 from typing import Any
-
-from src.Pipeline import Pipeline
 
 
 @dataclass
 class StageDefinition:
     """Describe one pipeline stage as editable, serialisable data.
 
-    ``stage_type`` is a stable machine-facing identifier that will be resolved
-    by the pipeline factory introduced in the next refactor. ``label`` is the
-    human-facing name shown by the GUI, and ``parameters`` contains only data
-    needed to configure that stage.
+    ``stage_type`` is a stable machine-facing identifier resolved by
+    ``PipelineFactory``. ``label`` is the human-facing name shown by the GUI,
+    and ``parameters`` contains only data needed to configure that stage.
     """
 
     stage_type: str
@@ -64,21 +61,14 @@ class StageDefinition:
 class PipelineDefinition:
     """Describe one user-selectable pipeline without owning runtime state.
 
-    The processing stages are now represented as plain data so definitions can
-    be edited and persisted independently of runtime ``PipelineLink`` objects.
-
-    ``builder`` is retained temporarily to preserve the existing runtime path.
-    The next refactor will replace it with a factory that constructs a pipeline
-    directly from ``stages``.
+    A definition contains only editable, serialisable data. Runtime callback
+    objects are created from it by ``PipelineFactory`` whenever a fresh
+    pipeline is required.
     """
 
     name: str
     description: str
     stages: tuple[StageDefinition, ...]
-    builder: Callable[[], Pipeline] = field(
-        repr=False,
-        compare=False,
-    )
 
     def __post_init__(self):
         self.name = str(self.name).strip()
@@ -96,9 +86,6 @@ class PipelineDefinition:
                 "PipelineDefinition stages must contain StageDefinition objects"
             )
 
-        if not callable(self.builder):
-            raise TypeError("PipelineDefinition builder must be callable")
-
     @property
     def stage_names(self) -> tuple[str, ...]:
         """Return human-facing stage labels for existing view code."""
@@ -106,26 +93,10 @@ class PipelineDefinition:
         return tuple(stage.label for stage in self.stages)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the serialisable portion of this pipeline definition.
-
-        The temporary runtime ``builder`` is deliberately excluded. Builders
-        are Python behavior rather than user configuration.
-        """
+        """Return a JSON-serialisable representation of this definition."""
 
         return {
             "name": self.name,
             "description": self.description,
             "stages": [stage.to_dict() for stage in self.stages],
         }
-
-    def build(self) -> Pipeline:
-        """Construct and validate a fresh runtime pipeline."""
-
-        pipeline = self.builder()
-
-        if not isinstance(pipeline, Pipeline):
-            raise TypeError(
-                "PipelineDefinition builder must return a Pipeline"
-            )
-
-        return pipeline

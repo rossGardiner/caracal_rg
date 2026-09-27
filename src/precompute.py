@@ -1,12 +1,14 @@
 """Full-dataset embedding precomputation entry point."""
 
-from src.PipelineDefinitions import build_embedding_pipeline
+from src.PipelineDefinitions import get_pipeline_definitions
+from src.PipelineFactory import PipelineFactory
 
 
 def main():
     """Run the canonical embedding pipeline over the complete data source."""
 
-    pipeline = build_embedding_pipeline()
+    definition = get_pipeline_definitions()[0]
+    pipeline = PipelineFactory().build(definition)
 
     print(
         pipeline.get_config_json()

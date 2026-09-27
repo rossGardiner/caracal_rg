@@ -14,10 +14,8 @@ from src.ExplorerModel import ExplorerModel
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
 from src.PipelineController import PipelineController
-from src.PipelineDefinitions import (
-    build_embedding_pipeline,
-    get_pipeline_definitions,
-)
+from src.PipelineDefinitions import get_pipeline_definitions
+from src.PipelineFactory import PipelineFactory
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel
 from src.PipelineView import PipelineView
@@ -35,7 +33,11 @@ def main():
     terminal_view = TerminalView()
     terminal_view.start_capture()
 
-    pipeline = build_embedding_pipeline()
+    pipeline_definitions = get_pipeline_definitions()
+    pipeline_factory = PipelineFactory()
+    pipeline = pipeline_factory.build(
+        pipeline_definitions[0]
+    )
 
     source = pipeline.get_link(
         CaracalStreamer
@@ -82,8 +84,6 @@ def main():
         packet_index=explorer_view.initial_packet_index()
     )
 
-    pipeline_definitions = get_pipeline_definitions()
-
     pipeline_run_model = PipelineRunModel(
         available_pipelines=tuple(
             definition.name
@@ -96,6 +96,7 @@ def main():
         model=pipeline_run_model,
         view=pipeline_view,
         runner=pipeline_runner,
+        pipeline_factory=pipeline_factory,
         pipeline_definitions=pipeline_definitions,
     )
 

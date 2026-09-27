@@ -1,8 +1,11 @@
 """Controller for the pipeline-management tab."""
 
+from functools import partial
+
 from PySide6.QtCore import QObject, Slot
 
 from src.PipelineDefinition import PipelineDefinition
+from src.PipelineFactory import PipelineFactory
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel, PipelineRunStatus
 from src.PipelineView import PipelineView
@@ -16,6 +19,7 @@ class PipelineController(QObject):
         model: PipelineRunModel,
         view: PipelineView,
         runner: PipelineRunner,
+        pipeline_factory: PipelineFactory,
         pipeline_definitions: tuple[PipelineDefinition, ...],
         parent=None,
     ):
@@ -24,6 +28,7 @@ class PipelineController(QObject):
         self.model = model
         self.view = view
         self.runner = runner
+        self.pipeline_factory = pipeline_factory
         self.pipeline_definitions = {
             definition.name: definition
             for definition in pipeline_definitions
@@ -81,7 +86,12 @@ class PipelineController(QObject):
 
         definition = self._selected_definition()
 
-        if not self.runner.start(definition.build):
+        if not self.runner.start(
+            partial(
+                self.pipeline_factory.build,
+                definition,
+            )
+        ):
             self.model.status = PipelineRunStatus.FAILED
             self.model.error = "A pipeline is already running"
             self.refresh_view()
