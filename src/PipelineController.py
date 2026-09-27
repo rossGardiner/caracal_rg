@@ -2,14 +2,16 @@
 
 from collections.abc import Callable
 
+from PySide6.QtCore import QObject, Slot
+
 from src.Pipeline import Pipeline
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel, PipelineRunStatus
 from src.PipelineView import PipelineView
 
 
-class PipelineController:
-    """Coordinate pipeline selection, execution, and presentation."""
+class PipelineController(QObject):
+    """Coordinate pipeline selection, execution, telemetry, and presentation."""
 
     def __init__(
         self,
@@ -17,7 +19,10 @@ class PipelineController:
         view: PipelineView,
         runner: PipelineRunner,
         pipeline_builders: dict[str, Callable[[], Pipeline]],
+        parent=None,
     ):
+        super().__init__(parent)
+
         self.model = model
         self.view = view
         self.runner = runner
@@ -35,6 +40,7 @@ class PipelineController:
         self.view.stop_requested.connect(self.stop)
 
         self.runner.started.connect(self._on_started)
+        self.runner.progress.connect(self._on_progress)
         self.runner.finished.connect(self._on_finished)
         self.runner.stopped.connect(self._on_stopped)
         self.runner.failed.connect(self._on_failed)
@@ -45,6 +51,7 @@ class PipelineController:
         )
         self.refresh_view()
 
+    @Slot(str)
     def select_pipeline(self, name: str):
         """Record the selected pipeline definition while no run is active."""
 
@@ -54,6 +61,7 @@ class PipelineController:
         self.model.select_pipeline(name)
         self.refresh_view()
 
+    @Slot()
     def start(self):
         """Start a fresh instance of the selected pipeline."""
 
@@ -71,6 +79,7 @@ class PipelineController:
             self.model.error = "A pipeline is already running"
             self.refresh_view()
 
+    @Slot()
     def pause(self):
         """Pause after the currently processing item completes."""
 
@@ -81,6 +90,7 @@ class PipelineController:
             self.model.status = PipelineRunStatus.PAUSED
             self.refresh_view()
 
+    @Slot()
     def resume(self):
         """Resume a cooperatively paused pipeline."""
 
@@ -91,6 +101,7 @@ class PipelineController:
             self.model.status = PipelineRunStatus.RUNNING
             self.refresh_view()
 
+    @Slot()
     def stop(self):
         """Stop after the currently processing item completes."""
 
@@ -111,19 +122,39 @@ class PipelineController:
     def refresh_view(self):
         self.view.render(self.model)
 
+    @Slot()
     def _on_started(self):
         if self.model.status is PipelineRunStatus.STARTING:
             self.model.status = PipelineRunStatus.RUNNING
             self.refresh_view()
 
+    @Slot(int, float, float, float, float)
+    def _on_progress(
+        self,
+        chunks_processed: int,
+        audio_seconds_processed: float,
+        elapsed_seconds: float,
+        chunks_per_second: float,
+        realtime_factor: float,
+    ):
+        self.model.chunks_processed = chunks_processed
+        self.model.audio_seconds_processed = audio_seconds_processed
+        self.model.elapsed_seconds = elapsed_seconds
+        self.model.chunks_per_second = chunks_per_second
+        self.model.realtime_factor = realtime_factor
+        self.refresh_view()
+
+    @Slot()
     def _on_finished(self):
         self.model.status = PipelineRunStatus.FINISHED
         self.refresh_view()
 
+    @Slot()
     def _on_stopped(self):
         self.model.status = PipelineRunStatus.STOPPED
         self.refresh_view()
 
+    @Slot(str)
     def _on_failed(self, message: str):
         self.model.status = PipelineRunStatus.FAILED
         self.model.error = message
