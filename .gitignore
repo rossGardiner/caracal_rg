@@ -3,7 +3,8 @@
 !src/**/
 !src/**/*.py
 
-!assets 
+!assets/
+!assets/* 
 
 !test/
 !test/**/
