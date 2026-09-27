@@ -13,6 +13,7 @@ from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
 from src.PipelineController import PipelineController
 from src.PipelineDefinitions import build_embedding_pipeline
+from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel
 from src.PipelineView import PipelineView
 from src.QtSignalHandler import QtSignalHandler
@@ -68,9 +69,11 @@ def main():
         available_pipelines=tuple(pipeline_builders),
     )
     pipeline_view = PipelineView()
+    pipeline_runner = PipelineRunner()
     pipeline_controller = PipelineController(
         model=pipeline_run_model,
         view=pipeline_view,
+        runner=pipeline_runner,
         pipeline_builders=pipeline_builders,
     )
 
@@ -79,9 +82,14 @@ def main():
         pipeline_view=pipeline_view,
     )
 
+    app.aboutToQuit.connect(
+        pipeline_controller.shutdown
+    )
+
     # Keep the MVC objects alive for the duration of the Qt event loop.
     application_objects = (
         pipeline_run_model,
+        pipeline_runner,
         pipeline_controller,
     )
     _ = application_objects

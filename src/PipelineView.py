@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.PipelineRunModel import PipelineRunModel
+from src.PipelineRunModel import PipelineRunModel, PipelineRunStatus
 
 
 class PipelineView(QWidget):
@@ -101,9 +101,6 @@ class PipelineView(QWidget):
         layout.addWidget(self.error_value)
         layout.addStretch(1)
 
-        # Execution is intentionally activated by PipelineRunner in MVC3.
-        self.set_execution_enabled(False)
-
     def set_pipeline_names(
         self,
         names: tuple[str, ...],
@@ -149,12 +146,37 @@ class PipelineView(QWidget):
             model.error or ""
         )
 
-    def set_execution_enabled(self, enabled: bool):
-        """Enable controls once a PipelineRunner is attached."""
+        active = model.status in {
+            PipelineRunStatus.STARTING,
+            PipelineRunStatus.RUNNING,
+            PipelineRunStatus.PAUSED,
+            PipelineRunStatus.STOPPING,
+        }
 
-        self.start_button.setEnabled(enabled)
-        self.pause_button.setEnabled(False)
-        self.stop_button.setEnabled(False)
+        self.pipeline_selector.setEnabled(
+            not active
+        )
+        self.start_button.setEnabled(
+            not active
+        )
+        self.pause_button.setEnabled(
+            model.status in {
+                PipelineRunStatus.RUNNING,
+                PipelineRunStatus.PAUSED,
+            }
+        )
+        self.pause_button.setText(
+            "Resume"
+            if model.status is PipelineRunStatus.PAUSED
+            else "Pause"
+        )
+        self.stop_button.setEnabled(
+            model.status in {
+                PipelineRunStatus.STARTING,
+                PipelineRunStatus.RUNNING,
+                PipelineRunStatus.PAUSED,
+            }
+        )
 
     def _on_pause_resume_clicked(self):
         if self.pause_button.text() == "Resume":

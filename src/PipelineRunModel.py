@@ -13,8 +13,10 @@ class PipelineRunStatus(Enum):
     """Lifecycle states exposed by pipeline execution."""
 
     IDLE = "Idle"
+    STARTING = "Starting"
     RUNNING = "Running"
     PAUSED = "Paused"
+    STOPPING = "Stopping"
     STOPPED = "Stopped"
     FINISHED = "Finished"
     FAILED = "Failed"
