@@ -1,6 +1,0 @@
-<map id="PipelineLink.PipelineLink.get_config_links" name="PipelineLink.PipelineLink.get_config_links">
-<area shape="rect" id="Node000001" title=" " alt="" coords="5,29,215,69"/>
-<area shape="poly" id="edge2_Node000001_Node000001" title=" " alt="" coords="57,30,54,20,62,10,81,5,110,3,143,5,161,13,159,18,142,11,110,8,82,10,65,15,59,21,62,28"/>
-<area shape="rect" id="Node000002" href="$classPipelineLink_1_1PipelineLink.html#a0067b49a3d79082eb325205d2146ff69" title=" " alt="" coords="263,37,536,62"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="215,47,249,47,249,52,215,52"/>
-</map>

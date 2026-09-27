@@ -1,8 +1,0 @@
-<map id="PipelineLink.PipelineLink.get_config_hash" name="PipelineLink.PipelineLink.get_config_hash">
-<area shape="rect" id="Node000001" title=" " alt="" coords="627,29,836,69"/>
-<area shape="rect" id="Node000002" href="$classEmbeddingsCreator_1_1EmbeddingsCreator.html#a436fec6c05b951cf7e52c6c25d2d0010" title=" " alt="" coords="345,29,579,69"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="613,52,579,52,579,47,613,47"/>
-<area shape="poly" id="edge2_Node000002_Node000002" title=" " alt="" coords="508,18,492,11,462,8,436,10,420,15,414,21,417,28,412,30,409,20,417,10,435,5,462,3,493,5,510,13"/>
-<area shape="rect" id="Node000003" href="$classCaracalStreamer_1_1CaracalStreamer.html#aa63350ab552380355890729bc4c1d48a" title=" " alt="" coords="5,37,297,62"/>
-<area shape="poly" id="edge3_Node000002_Node000003" title=" " alt="" coords="332,52,298,52,298,47,332,47"/>
-</map>

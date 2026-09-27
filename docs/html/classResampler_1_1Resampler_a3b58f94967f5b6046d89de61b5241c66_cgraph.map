@@ -1,6 +1,0 @@
-<map id="Resampler.Resampler.next_audio" name="Resampler.Resampler.next_audio">
-<area shape="rect" id="Node000001" title=" " alt="" coords="5,29,203,69"/>
-<area shape="poly" id="edge2_Node000001_Node000001" title=" " alt="" coords="60,30,58,20,65,10,80,5,104,3,131,6,146,13,144,18,130,11,104,8,81,10,68,15,63,21,65,28"/>
-<area shape="rect" id="Node000002" href="$classResampler_1_1Resampler.html#a236503e60f876a6bfddf9363564fd1bd" title=" " alt="" coords="251,29,427,69"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="203,47,237,47,237,52,203,52"/>
-</map>
