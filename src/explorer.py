@@ -11,7 +11,10 @@ from src.ControlWindow import ControlWindow
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
+from src.PipelineController import PipelineController
 from src.PipelineDefinitions import build_embedding_pipeline
+from src.PipelineRunModel import PipelineRunModel
+from src.PipelineView import PipelineView
 from src.QtSignalHandler import QtSignalHandler
 
 
@@ -57,9 +60,31 @@ def main():
         embedding_name=embeddings_creator.embedding_name,
     )
 
+    pipeline_builders = {
+        "Default embedding pipeline": build_embedding_pipeline,
+    }
+
+    pipeline_run_model = PipelineRunModel(
+        available_pipelines=tuple(pipeline_builders),
+    )
+    pipeline_view = PipelineView()
+    pipeline_controller = PipelineController(
+        model=pipeline_run_model,
+        view=pipeline_view,
+        pipeline_builders=pipeline_builders,
+    )
+
     window = MainWindow(
         explorer_view=explorer_view,
+        pipeline_view=pipeline_view,
     )
+
+    # Keep the MVC objects alive for the duration of the Qt event loop.
+    application_objects = (
+        pipeline_run_model,
+        pipeline_controller,
+    )
+    _ = application_objects
 
     print(
         pipeline.get_config_json()
