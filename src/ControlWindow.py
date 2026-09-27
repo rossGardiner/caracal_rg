@@ -1,5 +1,7 @@
 import numpy as np
 
+from functools import partial
+
 from PySide6.QtCore import (
     Slot,
     QByteArray,
@@ -21,13 +23,13 @@ from PySide6.QtMultimedia import (
 
 from src.AudioPacketSource import AudioPacketSource
 from src.AudioReader import AudioReader
-from src.BrowsingAudioLoader import BrowsingAudioLoader
 from src.CanonicalChunkGrid import CanonicalChunkGrid
-from src.EmbeddingCacheWorker import EmbeddingCacheWorker
-from src.EmbeddingRequestWorker import EmbeddingRequestWorker
+from src.EmbeddingRequest import EmbeddingRequest
 from src.BrowsingView import BrowsingView
 from src.ProcessedView import ProcessedView
-from src.SpectrogramWorker import SpectrogramWorker
+from src.LatestJobRunner import LatestJobRunner
+from src.SpectrogramData import calculate_spectrogram
+from src.Pipeline import Pipeline
 
 
 class ControlWindow(QMainWindow):
@@ -54,10 +56,7 @@ class ControlWindow(QMainWindow):
         audio_reader: AudioReader,
         chunk_grid: CanonicalChunkGrid,
         embedding_cache,
-        high_pass_filter,
-        resampler,
-        embeddings_creator,
-        pipeline_hash: str,
+        pipeline: Pipeline,
         embedding_name="perch_v2",
     ):
         super().__init__()
@@ -101,18 +100,20 @@ class ControlWindow(QMainWindow):
             audio_packet_source
         )
 
+        if not isinstance(
+            pipeline,
+            Pipeline,
+        ):
+            raise TypeError(
+                "pipeline must be a Pipeline"
+            )
+
         self.chunk_grid = chunk_grid
-        self.pipeline_hash = str(
-            pipeline_hash
-        )
+        self.pipeline = pipeline
+        self.pipeline_hash = pipeline.get_config_hash()
         self.embedding_name = str(
             embedding_name
         )
-
-        if not self.pipeline_hash:
-            raise ValueError(
-                "pipeline_hash cannot be empty"
-            )
 
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
@@ -122,76 +123,74 @@ class ControlWindow(QMainWindow):
         self.current_chunk_index = 0
         self.current_num_chunks = 0
 
-        self.embedding_cache_worker = EmbeddingCacheWorker(
-            cache=embedding_cache,
+        self.embedding_cache = embedding_cache
+        self.audio_reader = audio_reader
+        self.embedding_request = EmbeddingRequest(
+            cache=self.embedding_cache,
+            pipeline=self.pipeline,
+        )
+
+        # Background execution is a GUI policy, not a domain abstraction.
+        # Each independent activity gets its own LatestJobRunner instance,
+        # while all instances share the same scheduling implementation.
+        self.embedding_cache_jobs = LatestJobRunner(
+            name="embedding-cache-jobs",
             parent=self,
         )
-
-        self.embedding_cache_worker.loaded.connect(
+        self.embedding_cache_jobs.ready.connect(
             self._cached_embeddings_loaded
         )
-
-        self.embedding_cache_worker.failed.connect(
+        self.embedding_cache_jobs.failed.connect(
             self._cached_embeddings_failed
         )
 
-        self.embedding_request_worker = EmbeddingRequestWorker(
-            cache=embedding_cache,
-            embeddings_creator=embeddings_creator,
-            high_pass_filter=high_pass_filter,
-            resampler=resampler,
-            pipeline_hash=self.pipeline_hash,
+        self.embedding_request_jobs = LatestJobRunner(
+            name="embedding-request-jobs",
             parent=self,
         )
-
-        self.embedding_request_worker.ready.connect(
+        self.embedding_request_jobs.ready.connect(
             self._interactive_embedding_ready
         )
-
-        self.embedding_request_worker.failed.connect(
+        self.embedding_request_jobs.failed.connect(
             self._interactive_embedding_failed
         )
 
-        # Every browsing request receives a monotonically increasing
-        # id. Results are accepted only when they match the newest id.
+        # Every browsing request receives a monotonically increasing id.
+        # Results are accepted only when they match the newest id.
         self._browsing_request_id = 0
 
-        self.browsing_audio_loader = BrowsingAudioLoader(
-            audio_reader=audio_reader,
+        self.browsing_audio_jobs = LatestJobRunner(
+            name="browsing-audio-jobs",
             parent=self,
         )
-
-        self.browsing_audio_loader.loaded.connect(
+        self.browsing_audio_jobs.ready.connect(
             self._browsing_audio_loaded
         )
-
-        self.browsing_audio_loader.failed.connect(
+        self.browsing_audio_jobs.failed.connect(
             self._browsing_audio_failed
         )
 
-        self.browsing_spectrogram_worker = SpectrogramWorker(
+        self.browsing_spectrogram_jobs = LatestJobRunner(
+            name="browsing-spectrogram-jobs",
             parent=self,
         )
-
-        self.browsing_spectrogram_worker.ready.connect(
+        self.browsing_spectrogram_jobs.ready.connect(
             self._browsing_spectrogram_ready
         )
-
-        self.browsing_spectrogram_worker.failed.connect(
+        self.browsing_spectrogram_jobs.failed.connect(
             self._browsing_spectrogram_failed
         )
 
-        # Processed audio has a separate spectrogram worker so a
-        # browsing request cannot replace/cancel processed inspection.
-        self.processed_spectrogram_worker = SpectrogramWorker(
+        # Browsing and processed spectrograms have separate runner instances
+        # so one latest-request queue cannot replace the other's work.
+        self.processed_spectrogram_jobs = LatestJobRunner(
+            name="processed-spectrogram-jobs",
             parent=self,
         )
-
-        self.processed_spectrogram_worker.ready.connect(
+        self.processed_spectrogram_jobs.ready.connect(
             self._processed_spectrogram_ready
         )
-
-        self.processed_spectrogram_worker.failed.connect(
+        self.processed_spectrogram_jobs.failed.connect(
             self._processed_spectrogram_failed
         )
 
@@ -745,10 +744,13 @@ class ControlWindow(QMainWindow):
             self._processed_spectrogram_request_id
         )
 
-        self.processed_spectrogram_worker.request(
-            request_id=request_id,
-            waveform=audio_buffer.waveform,
-            sample_rate=audio_buffer.sample_rate,
+        self.processed_spectrogram_jobs.submit(
+            request_id,
+            partial(
+                calculate_spectrogram,
+                waveform=audio_buffer.waveform,
+                sample_rate=audio_buffer.sample_rate,
+            ),
         )
 
     @Slot(int, object)
@@ -898,8 +900,8 @@ class ControlWindow(QMainWindow):
         Load every embedding compatible with the active pipeline for
         the recording selected in BrowsingView.
 
-        Disk scanning and NumPy file loading happen in
-        EmbeddingCacheWorker, not on the Qt GUI thread.
+        The cache API remains synchronous; this GUI chooses to execute the
+        call through a background job runner.
         """
 
         recording_id = (
@@ -922,11 +924,14 @@ class ControlWindow(QMainWindow):
             f"Loading cached {self.embedding_name!r} embeddings..."
         )
 
-        self.embedding_cache_worker.request(
-            request_id=request_id,
-            recording_id=recording_id,
-            pipeline_hash=self.pipeline_hash,
-            embedding_name=self.embedding_name,
+        self.embedding_cache_jobs.submit(
+            request_id,
+            partial(
+                self.embedding_cache.list_embeddings,
+                recording_id=recording_id,
+                pipeline_hash=self.pipeline_hash,
+                embedding_name=self.embedding_name,
+            ),
         )
 
     @Slot(int, object)
@@ -1083,7 +1088,7 @@ class ControlWindow(QMainWindow):
 
         This method runs on the Qt GUI thread, so it deliberately does
         no file I/O. It only updates lightweight GUI state and submits
-        a request to BrowsingAudioLoader.
+        a request to the background job runner.
         """
 
         if self.current_audio_packet is None:
@@ -1132,14 +1137,14 @@ class ControlWindow(QMainWindow):
             f"Loading chunk {self.current_chunk_index}..."
         )
 
-        self.browsing_audio_loader.request(
-            request_id=request_id,
-            packet=self.current_audio_packet,
-            chunk_index=self.current_chunk_index,
-            start_s=start_s,
-            duration_s=(
-                end_s
-                - start_s
+        self.browsing_audio_jobs.submit(
+            request_id,
+            partial(
+                self.audio_reader.read_buffer,
+                packet=self.current_audio_packet,
+                chunk_index=self.current_chunk_index,
+                start_s=start_s,
+                duration_s=(end_s - start_s),
             ),
         )
 
@@ -1176,10 +1181,13 @@ class ControlWindow(QMainWindow):
             "calculating spectrogram..."
         )
 
-        self.browsing_spectrogram_worker.request(
-            request_id=request_id,
-            waveform=audio_buffer.waveform,
-            sample_rate=audio_buffer.sample_rate,
+        self.browsing_spectrogram_jobs.submit(
+            request_id,
+            partial(
+                calculate_spectrogram,
+                waveform=audio_buffer.waveform,
+                sample_rate=audio_buffer.sample_rate,
+            ),
         )
 
         embedding_request_id = (
@@ -1191,9 +1199,12 @@ class ControlWindow(QMainWindow):
             f"{audio_buffer.chunk_index}..."
         )
 
-        self.embedding_request_worker.request(
-            request_id=embedding_request_id,
-            audio_buffer=audio_buffer,
+        self.embedding_request_jobs.submit(
+            embedding_request_id,
+            partial(
+                self.embedding_request.run,
+                audio_buffer,
+            ),
         )
 
     @Slot(int, object)
@@ -1381,11 +1392,11 @@ class ControlWindow(QMainWindow):
     ):
         self.stop_audio()
 
-        self.browsing_audio_loader.shutdown()
-        self.browsing_spectrogram_worker.shutdown()
-        self.processed_spectrogram_worker.shutdown()
-        self.embedding_cache_worker.shutdown()
-        self.embedding_request_worker.shutdown()
+        self.browsing_audio_jobs.shutdown()
+        self.browsing_spectrogram_jobs.shutdown()
+        self.processed_spectrogram_jobs.shutdown()
+        self.embedding_cache_jobs.shutdown()
+        self.embedding_request_jobs.shutdown()
         self.processed_view.shutdown()
 
         super().closeEvent(

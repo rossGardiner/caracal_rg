@@ -3,6 +3,8 @@ import os
 import numpy as np
 import soundfile as sf
 
+from src.AudioBuffer import AudioBuffer
+
 try:
     from caracal.datagetter import DataGetter
 except ImportError:
@@ -215,6 +217,32 @@ class AudioReader:
             packet=packet,
             start_sample=start_sample,
             sample_count=sample_count,
+        )
+
+    def read_buffer(
+        self,
+        packet,
+        chunk_index: int,
+        start_s: float,
+        duration_s: float,
+    ):
+        """Read one logical region and package it as an AudioBuffer."""
+
+        waveform, sample_rate = self.read(
+            packet=packet,
+            start_s=start_s,
+            duration_s=duration_s,
+        )
+
+        return AudioBuffer(
+            packet=packet,
+            waveform=waveform,
+            sample_rate=sample_rate,
+            start_offset_s=start_s,
+            valid_samples=len(waveform),
+            left_context_samples=0,
+            right_context_samples=0,
+            chunk_index=chunk_index,
         )
 
     # ======================================================

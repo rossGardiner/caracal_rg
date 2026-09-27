@@ -3,13 +3,16 @@ import pyqtgraph as pg
 
 from PySide6.QtCore import Slot
 
+from functools import partial
+
 from PySide6.QtWidgets import (
     QWidget,
     QLabel,
     QVBoxLayout,
 )
 
-from src.EmbeddingPCAWorker import EmbeddingPCAWorker
+from src.EmbeddingPCA import calculate_embedding_pca
+from src.LatestJobRunner import LatestJobRunner
 
 
 class EmbeddingSpaceVisualiser(QWidget):
@@ -64,19 +67,20 @@ class EmbeddingSpaceVisualiser(QWidget):
         self._current_keys = set()
 
         # Each dataset change invalidates the previous projection. The
-        # worker retains at most one pending request, so rapid cache/live
+        # job runner retains at most one pending request, so rapid cache/live
         # updates cannot build a long queue of obsolete SVD calculations.
         self._pca_request_id = 0
 
-        self._pca_worker = EmbeddingPCAWorker(
-            parent=self
+        self._pca_jobs = LatestJobRunner(
+            name="embedding-pca-jobs",
+            parent=self,
         )
 
-        self._pca_worker.ready.connect(
+        self._pca_jobs.ready.connect(
             self._pca_ready
         )
 
-        self._pca_worker.failed.connect(
+        self._pca_jobs.failed.connect(
             self._pca_failed
         )
 
@@ -438,7 +442,7 @@ class EmbeddingSpaceVisualiser(QWidget):
 
         The Qt thread only snapshots references to the current immutable
         embedding vectors and returns immediately. Matrix assembly and SVD
-        happen in EmbeddingPCAWorker.
+        happen in a LatestJobRunner.
         """
 
         self._pca_request_id += 1
@@ -465,9 +469,16 @@ class EmbeddingSpaceVisualiser(QWidget):
             f"Calculating PCA for {point_count} compatible embeddings..."
         )
 
-        self._pca_worker.request(
-            request_id=request_id,
-            vectors=self.embedding_vectors,
+        vectors = tuple(
+            self.embedding_vectors
+        )
+
+        self._pca_jobs.submit(
+            request_id,
+            partial(
+                calculate_embedding_pca,
+                vectors,
+            ),
         )
 
     @Slot(int, object)
@@ -659,7 +670,7 @@ class EmbeddingSpaceVisualiser(QWidget):
     def shutdown(
         self,
     ):
-        self._pca_worker.shutdown()
+        self._pca_jobs.shutdown()
 
     def closeEvent(
         self,

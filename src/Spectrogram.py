@@ -15,7 +15,7 @@ class Spectrogram(QWidget):
     """
     Render display-ready spectrogram data.
 
-    Browsing code should calculate spectrograms on SpectrogramWorker
+    Browsing code should calculate spectrograms away from the GUI thread
     and call set_result() on the Qt GUI thread.
 
     set_buffers() remains as a synchronous compatibility helper for
@@ -141,7 +141,7 @@ class Spectrogram(QWidget):
         Synchronously calculate and display AudioBuffers.
 
         Kept for older visualiser code. New interactive browsing code
-        should use SpectrogramWorker + set_result() instead.
+        should calculate asynchronously and call set_result() instead.
         """
 
         buffers = list(

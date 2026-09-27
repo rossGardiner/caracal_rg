@@ -49,26 +49,24 @@ ecs = EmbeddingCacheSaver(
 from src.SpeedometerLink import SpeedometerLink
 sl = SpeedometerLink()
 
-# ==========================================================
-# Build the embedding-producing portion of the pipeline first
-# ==========================================================
-#
-# EmbeddingsCreator.get_config_hash() walks upstream through the
-# registered PipelineLink.previous chain. The GUI needs that exact hash
-# so it can list only cache entries compatible with this pipeline.
-# Therefore the upstream chain must exist before ControlWindow is made.
-#
+from src.Pipeline import Pipeline
 
-cs.register_callback(abl)
+pipeline = Pipeline(
+    [
+        cs,
+        abl,
+        hps,
+        sl,
+        rs,
+        ecl,
+        ec,
+        ecs,
+    ]
+)
 
-abl.register_callback(hps)
-hps.register_callback(sl)
-sl.register_callback(rs)
-
-rs.register_callback(ecl)
-ecl.register_callback(ec)
-
-pipeline_hash = ec.get_config_hash()
+# Pipeline.get_config_hash() delegates to the current tail. The existing
+# PipelineLink.previous traversal therefore remains the source of truth for
+# cache compatibility; introducing this container does not change hashing.
 
 from PySide6.QtWidgets import QApplication
 from src.QtSignalHandler import QtSignalHandler
@@ -89,10 +87,7 @@ window = ControlWindow(
     audio_reader=ar,
     chunk_grid=chunk_grid,
     embedding_cache=ecache,
-    high_pass_filter=hps,
-    resampler=rs,
-    embeddings_creator=ec,
-    pipeline_hash=pipeline_hash,
+    pipeline=pipeline,
     embedding_name=ec.embedding_name,
 )
 
@@ -101,18 +96,20 @@ gpl = GuiPipelineLink(
     control_window=window
 )
 
-# Complete the downstream side of the pipeline after the window exists.
-ec.register_callback(ecs)
-ecs.register_callback(gpl)
+# The observer is appended after the window exists. It is excluded from the
+# existing pipeline configuration, so the pipeline hash remains unchanged.
+pipeline.append(
+    gpl
+)
 
 print(
-    ecs.get_config_json()
+    pipeline.get_config_json()
 )
 
 window.show()
 
 pipeline_thread = threading.Thread(
-    target=cs.stream,
+    target=pipeline.run,
     daemon=True,
 )
 
