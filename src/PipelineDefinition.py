@@ -1,6 +1,7 @@
 """Plain, serialisable descriptions of pipelines offered by the application."""
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 from typing import Any
@@ -100,3 +101,24 @@ class PipelineDefinition:
             "description": self.description,
             "stages": [stage.to_dict() for stage in self.stages],
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "PipelineDefinition":
+        """Construct a complete pipeline definition from serialised data."""
+
+        return cls(
+            name=data["name"],
+            description=data.get("description", ""),
+            stages=tuple(
+                StageDefinition.from_dict(stage)
+                for stage in data["stages"]
+            ),
+        )
+
+    def copy(self, *, name: str | None = None) -> "PipelineDefinition":
+        """Return a detached copy suitable for in-memory editing."""
+
+        data = deepcopy(self.to_dict())
+        if name is not None:
+            data["name"] = name
+        return PipelineDefinition.from_dict(data)

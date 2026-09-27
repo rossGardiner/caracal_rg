@@ -39,6 +39,18 @@ class StageType:
     parameters: tuple[StageParameter, ...]
     builder: Callable[[dict[str, Any], "_BuildContext"], PipelineLink]
 
+    def default_stage(self) -> StageDefinition:
+        """Return a new stage populated with this type's defaults."""
+
+        return StageDefinition(
+            stage_type=self.stage_type,
+            label=self.label,
+            parameters={
+                parameter.name: parameter.default
+                for parameter in self.parameters
+            },
+        )
+
     def validated_parameters(
         self,
         stage: StageDefinition,
@@ -106,14 +118,26 @@ class PipelineFactory:
                 f"Unknown pipeline stage type: {stage_type}"
             ) from exc
 
+    def validate_definition(
+        self,
+        definition: PipelineDefinition,
+    ):
+        """Validate registered stage types and editable parameters."""
+
+        if not isinstance(definition, PipelineDefinition):
+            raise TypeError("definition must be a PipelineDefinition")
+
+        for stage in definition.stages:
+            stage_type = self.get_stage_type(stage.stage_type)
+            stage_type.validated_parameters(stage)
+
     def build(
         self,
         definition: PipelineDefinition,
     ) -> Pipeline:
         """Construct a fresh callback graph from definition data."""
 
-        if not isinstance(definition, PipelineDefinition):
-            raise TypeError("definition must be a PipelineDefinition")
+        self.validate_definition(definition)
 
         context = _BuildContext(
             factory=self,

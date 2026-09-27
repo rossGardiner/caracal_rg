@@ -31,6 +31,9 @@ class PipelineRunModel:
     pipeline_description: str = ""
     pipeline_stages: tuple[str, ...] = ()
     pipeline_hash: str | None = None
+    pipeline_source: str = ""
+    pipeline_editable: bool = False
+    pipeline_dirty: bool = False
     status: PipelineRunStatus = PipelineRunStatus.IDLE
     chunks_processed: int = 0
     audio_seconds_processed: float = 0.0
@@ -40,23 +43,37 @@ class PipelineRunModel:
     error: str | None = None
 
     def __post_init__(self):
-        if not self.available_pipelines:
+        self.set_available_pipelines(
+            self.available_pipelines,
+            selected_pipeline=self.selected_pipeline,
+        )
+
+    def set_available_pipelines(
+        self,
+        names: tuple[str, ...],
+        selected_pipeline: str | None = None,
+    ):
+        """Replace the selectable pipeline names and keep a valid selection."""
+
+        names = tuple(names)
+        if not names:
             raise ValueError(
                 "At least one pipeline must be available"
             )
 
-        if len(set(self.available_pipelines)) != len(self.available_pipelines):
+        if len(set(names)) != len(names):
             raise ValueError(
                 "Pipeline names must be unique"
             )
 
-        if self.selected_pipeline is None:
-            self.selected_pipeline = self.available_pipelines[0]
+        if selected_pipeline is None:
+            selected_pipeline = self.selected_pipeline
 
-        if self.selected_pipeline not in self.available_pipelines:
-            raise ValueError(
-                f"Unknown selected pipeline: {self.selected_pipeline}"
-            )
+        if selected_pipeline not in names:
+            selected_pipeline = names[0]
+
+        self.available_pipelines = names
+        self.selected_pipeline = selected_pipeline
 
     def select_pipeline(self, name: str):
         """Select one of the pipelines advertised by the application."""

@@ -15,6 +15,7 @@ from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
 from src.PipelineController import PipelineController
 from src.PipelineDefinitions import get_pipeline_definitions
+from src.PipelineDefinitionStore import PipelineDefinitionStore
 from src.PipelineFactory import PipelineFactory
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel
@@ -33,10 +34,51 @@ def main():
     terminal_view = TerminalView()
     terminal_view.start_capture()
 
-    pipeline_definitions = get_pipeline_definitions()
+    builtin_pipeline_definitions = get_pipeline_definitions()
     pipeline_factory = PipelineFactory()
+    definition_store = PipelineDefinitionStore()
+    try:
+        saved_pipeline_definitions = definition_store.load()
+    except (OSError, TypeError, ValueError) as exc:
+        print(
+            f"Could not load saved pipeline definitions from "
+            f"{definition_store.path}: {exc}",
+            file=sys.stderr,
+        )
+        saved_pipeline_definitions = ()
+
+    builtin_names = {
+        definition.name
+        for definition in builtin_pipeline_definitions
+    }
+    user_pipeline_definitions = []
+    for definition in saved_pipeline_definitions:
+        if definition.name in builtin_names:
+            print(
+                f"Ignoring saved pipeline {definition.name!r}: "
+                "the name is reserved by a built-in pipeline",
+                file=sys.stderr,
+            )
+            continue
+
+        try:
+            pipeline_factory.validate_definition(definition)
+        except (TypeError, ValueError) as exc:
+            print(
+                f"Ignoring saved pipeline {definition.name!r}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+
+        user_pipeline_definitions.append(definition)
+
+    user_pipeline_definitions = tuple(user_pipeline_definitions)
+    pipeline_definitions = (
+        tuple(builtin_pipeline_definitions)
+        + user_pipeline_definitions
+    )
     pipeline = pipeline_factory.build(
-        pipeline_definitions[0]
+        builtin_pipeline_definitions[0]
     )
 
     source = pipeline.get_link(
@@ -97,7 +139,9 @@ def main():
         view=pipeline_view,
         runner=pipeline_runner,
         pipeline_factory=pipeline_factory,
-        pipeline_definitions=pipeline_definitions,
+        builtin_pipeline_definitions=builtin_pipeline_definitions,
+        user_pipeline_definitions=user_pipeline_definitions,
+        definition_store=definition_store,
     )
 
     window = MainWindow(
