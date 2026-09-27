@@ -1,16 +1,8 @@
 import numpy as np
-import math
 
-from src.Spectrogram import (
-    Spectrogram
-)
-
-from src.EmbeddingSpaceVisualiser import (
-    EmbeddingSpaceVisualiser
-)
+from functools import partial
 
 from PySide6.QtCore import (
-    Signal,
     Slot,
     QByteArray,
     QBuffer,
@@ -20,12 +12,7 @@ from PySide6.QtCore import (
 
 from PySide6.QtWidgets import (
     QMainWindow,
-    QDockWidget,
-    QToolBar,
-    QLabel,
-    QPushButton,
-    QSlider,
-    QComboBox
+    QSplitter,
 )
 
 from PySide6.QtMultimedia import (
@@ -36,73 +23,184 @@ from PySide6.QtMultimedia import (
 
 from src.AudioPacketSource import AudioPacketSource
 from src.AudioReader import AudioReader
-from src.AudioBuffer import AudioBuffer
+from src.CanonicalChunkGrid import CanonicalChunkGrid
+from src.EmbeddingRequest import EmbeddingRequest
+from src.BrowsingView import BrowsingView
+from src.ProcessedView import ProcessedView
+from src.LatestJobRunner import LatestJobRunner
+from src.SpectrogramData import calculate_spectrogram
+from src.Pipeline import Pipeline
+
 
 class ControlWindow(QMainWindow):
     """
-    Main visualisation controller.
+    Main application coordinator.
 
-    Responsibilities:
+    GUI ownership is split between:
 
-        - receive AudioBuffers from GuiPipelineLink
-        - manage the current batch
-        - control pipeline progression
-        - audio playback
-        - playback volume
-        - manage dockable visualisation widgets
+        BrowsingView
+            source recording navigation, source spectrogram,
+            playback controls
 
-    It deliberately does NOT know how to:
+        ProcessedView
+            processed audio inspection, processed embeddings,
+            non-blocking pipeline status
 
-        - calculate spectrograms
-        - calculate PCA
-        - draw embedding spaces
+    ControlWindow coordinates data loading, playback, and pipeline
+    observation without allowing the two views to share GUI state.
     """
 
-    next_requested = Signal()
-
-    def __init__(self, audio_packet_source: AudioPacketSource, audio_reader: AudioReader, chunk_duration_s: float = 5.0, embedding_name="perch_v2"):
+    def __init__(
+        self,
+        audio_packet_source: AudioPacketSource,
+        audio_reader: AudioReader,
+        chunk_grid: CanonicalChunkGrid,
+        embedding_cache,
+        pipeline: Pipeline,
+        embedding_name="perch_v2",
+    ):
         super().__init__()
 
         # ==================================================
-        # Current pipeline state
+        # Processed pipeline state
         # ==================================================
 
-        self.current_buffers = []
+        self.processed_buffers = []
+        self.current_processed_buffer_index = 0
+        self._processed_spectrogram_request_id = 0
 
-        self._waiting_for_next = False
         # ==================================================
-        # Recording navigation state
+        # Recording browsing state
         # ==================================================
 
-        if chunk_duration_s <= 0:
-            raise ValueError(
-                "chunk_duration_s must be greater than zero"
+        self.browsing_buffers = []
+
+        # Compatible cached embeddings are loaded independently from
+        # source-audio browsing. Results use their own request id so a
+        # slow cache scan for a previous recording cannot replace the
+        # currently selected recording's PCA dataset.
+        self._embedding_cache_request_id = 0
+
+        # On-demand embedding requests use a separate monotonically
+        # increasing id. The dictionary keeps any embeddings produced while a
+        # recording-level cache scan is still in flight so they can be merged
+        # back after that scan replaces the PCA dataset.
+        self._interactive_embedding_request_id = 0
+        self._interactive_embeddings_by_key = {}
+
+        if not isinstance(
+            chunk_grid,
+            CanonicalChunkGrid,
+        ):
+            raise TypeError(
+                "chunk_grid must be a CanonicalChunkGrid"
             )
 
         self.audio_packet_source = (
             audio_packet_source
         )
 
-        self.chunk_duration_s = float(
-            chunk_duration_s
+        if not isinstance(
+            pipeline,
+            Pipeline,
+        ):
+            raise TypeError(
+                "pipeline must be a Pipeline"
+            )
+
+        self.chunk_grid = chunk_grid
+        self.pipeline = pipeline
+        self.pipeline_hash = pipeline.get_config_hash()
+        self.embedding_name = str(
+            embedding_name
         )
 
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
         )
-        self.audio_reader = audio_reader
-        
+
         self.current_audio_packet = None
         self.current_chunk_index = 0
         self.current_num_chunks = 0
-        
+
+        self.embedding_cache = embedding_cache
+        self.audio_reader = audio_reader
+        self.embedding_request = EmbeddingRequest(
+            cache=self.embedding_cache,
+            pipeline=self.pipeline,
+        )
+
+        # Background execution is a GUI policy, not a domain abstraction.
+        # Each independent activity gets its own LatestJobRunner instance,
+        # while all instances share the same scheduling implementation.
+        self.embedding_cache_jobs = LatestJobRunner(
+            name="embedding-cache-jobs",
+            parent=self,
+        )
+        self.embedding_cache_jobs.ready.connect(
+            self._cached_embeddings_loaded
+        )
+        self.embedding_cache_jobs.failed.connect(
+            self._cached_embeddings_failed
+        )
+
+        self.embedding_request_jobs = LatestJobRunner(
+            name="embedding-request-jobs",
+            parent=self,
+        )
+        self.embedding_request_jobs.ready.connect(
+            self._interactive_embedding_ready
+        )
+        self.embedding_request_jobs.failed.connect(
+            self._interactive_embedding_failed
+        )
+
+        # Every browsing request receives a monotonically increasing id.
+        # Results are accepted only when they match the newest id.
+        self._browsing_request_id = 0
+
+        self.browsing_audio_jobs = LatestJobRunner(
+            name="browsing-audio-jobs",
+            parent=self,
+        )
+        self.browsing_audio_jobs.ready.connect(
+            self._browsing_audio_loaded
+        )
+        self.browsing_audio_jobs.failed.connect(
+            self._browsing_audio_failed
+        )
+
+        self.browsing_spectrogram_jobs = LatestJobRunner(
+            name="browsing-spectrogram-jobs",
+            parent=self,
+        )
+        self.browsing_spectrogram_jobs.ready.connect(
+            self._browsing_spectrogram_ready
+        )
+        self.browsing_spectrogram_jobs.failed.connect(
+            self._browsing_spectrogram_failed
+        )
+
+        # Browsing and processed spectrograms have separate runner instances
+        # so one latest-request queue cannot replace the other's work.
+        self.processed_spectrogram_jobs = LatestJobRunner(
+            name="processed-spectrogram-jobs",
+            parent=self,
+        )
+        self.processed_spectrogram_jobs.ready.connect(
+            self._processed_spectrogram_ready
+        )
+        self.processed_spectrogram_jobs.failed.connect(
+            self._processed_spectrogram_failed
+        )
+
         # ==================================================
         # Audio playback state
         # ==================================================
 
         self._audio_sink = None
-
         self._audio_buffer = None
+        self._playback_source = None
 
         # ==================================================
         # Main window
@@ -113,368 +211,85 @@ class ControlWindow(QMainWindow):
         )
 
         self.resize(
-            1300,
+            1400,
             850,
         )
 
-        #
-        # Allow dock widgets to be freely rearranged.
-        #
-        self.setDockNestingEnabled(
-            True
-        )
-
-        self.setDockOptions(
-            QMainWindow.DockOption.AllowNestedDocks
-            | QMainWindow.DockOption.AllowTabbedDocks
-            | QMainWindow.DockOption.AnimatedDocks
-        )
-
         # ==================================================
-        # Visualisation components
+        # GUI components
         # ==================================================
 
-        self.spectrogram = (
-            Spectrogram()
+        self.browsing_view = BrowsingView(
+            audio_packets=self.audio_packets,
         )
 
-        self.embedding_visualiser = (
-            EmbeddingSpaceVisualiser(
-                embedding_name=embedding_name
-            )
+        self.processed_view = ProcessedView(
+            embedding_name=self.embedding_name,
         )
 
-        # ==================================================
-        # Spectrogram dock
-        # ==================================================
-
-        self.spectrogram_dock = (
-            QDockWidget(
-                "Spectrogram",
-                self,
-            )
-        )
-
-        self.spectrogram_dock.setWidget(
-            self.spectrogram
-        )
-
-        self.spectrogram_dock.setAllowedAreas(
-            Qt.DockWidgetArea.AllDockWidgetAreas
-        )
-
-        self.spectrogram_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-
-        # ==================================================
-        # Embedding dock
-        # ==================================================
-
-        self.embedding_dock = (
-            QDockWidget(
-                "Embedding Space",
-                self,
-            )
-        )
-
-        self.embedding_dock.setWidget(
-            self.embedding_visualiser
-        )
-
-        self.embedding_dock.setAllowedAreas(
-            Qt.DockWidgetArea.AllDockWidgetAreas
-        )
-
-        self.embedding_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-
-        # ==================================================
-        # Initial dock arrangement
-        # ==================================================
-
-        #
-        # Add both to the same area first.
-        #
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-            self.embedding_dock,
-        )
-
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-            self.spectrogram_dock,
-        )
-
-        #
-        # Initial arrangement:
-        #
-        #     Embedding space
-        #     ----------------
-        #     Spectrogram
-        #
-        # The user can drag either one anywhere afterwards.
-        #
-        self.splitDockWidget(
-            self.embedding_dock,
-            self.spectrogram_dock,
-            Qt.Orientation.Vertical,
-        )
-
-        # ==================================================
-        # View menu
-        # ==================================================
-
-        #
-        # If the user closes/hides a dock, these menu entries
-        # allow it to be shown again.
-        #
-        view_menu = (
-            self.menuBar()
-            .addMenu(
-                "View"
-            )
-        )
-
-        view_menu.addAction(
-            self.embedding_dock
-            .toggleViewAction()
-        )
-
-        view_menu.addAction(
-            self.spectrogram_dock
-            .toggleViewAction()
-        )
-
-        # ==================================================
-        # Playback toolbar
-        # ==================================================
-
-        self.toolbar = QToolBar(
-            "Playback",
-            self,
-        )
-
-        self.toolbar.setMovable(
-            False
-        )
-
-        self.addToolBar(
-            Qt.ToolBarArea.BottomToolBarArea,
-            self.toolbar,
-        )
-        # --------------------------------------------------
-        # Recording
-        # --------------------------------------------------
-
-        self.toolbar.addWidget(
-            QLabel(
-                "Recording:"
-            )
-        )
-
-        self.recording_selector = (
-            QComboBox()
-        )
-
-        for index, packet in enumerate(
-            self.audio_packets
-        ):
-            label = (
-                packet.display_name
-                or f"Recording {index + 1}"
-            )
-
-            self.recording_selector.addItem(
-                label,
-                userData=index,
-            )
-
-        self.recording_selector.currentIndexChanged.connect(
+        self.browsing_view.recording_selected.connect(
             self._recording_selected
         )
 
-        self.toolbar.addWidget(
-            self.recording_selector
-        )
-
-        self.toolbar.addSeparator()
-
-        # --------------------------------------------------
-        # Canonical chunk
-        # --------------------------------------------------
-
-        self.toolbar.addWidget(
-            QLabel(
-                "Chunk:"
-            )
-        )
-
-        self.chunk_slider = QSlider(
-            Qt.Orientation.Horizontal
-        )
-
-        self.chunk_slider.setMinimum(
-            0
-        )
-
-        self.chunk_slider.setMaximum(
-            0
-        )
-
-        self.chunk_slider.setSingleStep(
-            1
-        )
-
-        self.chunk_slider.setPageStep(
-            10
-        )
-
-        self.chunk_slider.setMinimumWidth(
-            300
-        )
-
-        self.chunk_slider.setEnabled(
-            False
-        )
-
-        self.chunk_slider.valueChanged.connect(
+        self.browsing_view.chunk_selected.connect(
             self._chunk_selected
         )
 
-        self.toolbar.addWidget(
-            self.chunk_slider
-        )
-
-        self.chunk_label = QLabel(
-            "No recording selected"
-        )
-
-        self.toolbar.addWidget(
-            self.chunk_label
-        )
-
-        self.toolbar.addSeparator()
-        # --------------------------------------------------
-        # Play
-        # --------------------------------------------------
-
-        self.play_button = (
-            QPushButton(
-                "Play"
-            )
-        )
-
-        self.play_button.clicked.connect(
+        self.browsing_view.play_requested.connect(
             self.play_audio
         )
 
-        self.toolbar.addWidget(
-            self.play_button
+        self.browsing_view.stop_requested.connect(
+            self.stop_browsing_audio
         )
 
-        # --------------------------------------------------
-        # Stop
-        # --------------------------------------------------
-
-        self.stop_button = (
-            QPushButton(
-                "Stop"
-            )
+        self.processed_view.buffer_selected.connect(
+            self._processed_buffer_selected
         )
 
-        self.stop_button.clicked.connect(
-            self.stop_audio
+        self.processed_view.play_requested.connect(
+            self.play_processed_audio
         )
 
-        self.toolbar.addWidget(
-            self.stop_button
+        self.processed_view.stop_requested.connect(
+            self.stop_processed_audio
         )
 
-        self.toolbar.addSeparator()
+        # ==================================================
+        # Main layout
+        # ==================================================
 
-        # --------------------------------------------------
-        # Volume
-        # --------------------------------------------------
-
-        self.volume_label = QLabel(
-            "Volume: 100%"
-        )
-
-        self.toolbar.addWidget(
-            self.volume_label
-        )
-
-        self.volume_slider = QSlider(
+        self.main_splitter = QSplitter(
             Qt.Orientation.Horizontal
         )
 
-        #
-        # Playback-only digital gain:
-        #
-        #     100% = 1x
-        #     200% = 2x
-        #     500% = 5x
-        #
-        self.volume_slider.setRange(
+        self.main_splitter.addWidget(
+            self.browsing_view
+        )
+
+        self.main_splitter.addWidget(
+            self.processed_view
+        )
+
+        self.main_splitter.setStretchFactor(
             0,
-            500,
+            1,
         )
 
-        self.volume_slider.setValue(
-            100
+        self.main_splitter.setStretchFactor(
+            1,
+            1,
         )
 
-        self.volume_slider.setSingleStep(
-            10
-        )
-
-        self.volume_slider.setPageStep(
-            25
-        )
-
-        self.volume_slider.setMaximumWidth(
-            250
-        )
-
-        self.volume_slider.valueChanged.connect(
-            self._volume_changed
-        )
-
-        self.toolbar.addWidget(
-            self.volume_slider
-        )
-
-        self.toolbar.addSeparator()
-
-        # --------------------------------------------------
-        # Next
-        # --------------------------------------------------
-
-        self.next_button = (
-            QPushButton(
-                "Next"
-            )
-        )
-
-        self.next_button.clicked.connect(
-            self.next_batch
-        )
-
-        self.toolbar.addWidget(
-            self.next_button
+        self.setCentralWidget(
+            self.main_splitter
         )
 
         # ==================================================
-        # Initial control state
+        # Initial state
         # ==================================================
 
-        self._set_controls_enabled(
+        self._set_browsing_controls_enabled(
             False
         )
 
@@ -483,21 +298,12 @@ class ControlWindow(QMainWindow):
                 0
             )
         else:
-            self.recording_selector.setEnabled(
-                False
-            )
-
-            self.chunk_slider.setEnabled(
-                False
-            )
-
-            self.chunk_label.setText(
-                "No recordings available"
-            )
+            self.browsing_view.set_no_recordings()
 
         self.statusBar().showMessage(
-            "Waiting for audio..."
+            "Ready"
         )
+
     # ======================================================
     # Pipeline input
     # ======================================================
@@ -508,9 +314,9 @@ class ControlWindow(QMainWindow):
         buffers,
     ):
         """
-        Receive one batch from GuiPipelineLink.
+        Receive one processed batch from GuiPipelineLink.
 
-        The batch may contain any number of AudioBuffers.
+        Processed data is routed only to ProcessedView.
         """
 
         buffers = list(
@@ -520,67 +326,38 @@ class ControlWindow(QMainWindow):
         if not buffers:
             return
 
-        self.stop_audio()
-
-        self.current_buffers = (
-            buffers
+        # A new pipeline batch replaces the processed-audio inspection
+        # state, but must not interrupt source-audio browsing playback.
+        self._stop_audio_if_source(
+            "processed"
         )
 
-        self._waiting_for_next = (
-            True
+        self.processed_buffers = buffers
+        self.current_processed_buffer_index = 0
+        # The processed-audio inspector always shows the live batch,
+        # but the PCA view is scoped to the recording selected on the
+        # browsing side. Only matching chunks are merged into it.
+        selected_recording_id = (
+            self._selected_recording_id()
         )
 
-        # --------------------------------------------------
-        # Delegate visualisation
-        # --------------------------------------------------
+        matching_buffers = [
+            buffer
+            for buffer
+            in self.processed_buffers
+            if buffer.recording_id
+            == selected_recording_id
+        ]
 
-        self.spectrogram.set_buffers(
-            self.current_buffers
+        self.processed_view.add_buffers(
+            matching_buffers
         )
 
-        self.embedding_visualiser.add_buffers(
-            self.current_buffers
+        self._select_processed_buffer(
+            0
         )
 
-        # --------------------------------------------------
-        # Controls
-        # --------------------------------------------------
-
-        self._set_controls_enabled(
-            True
-        )
-
-        self._update_status()
-
-    # ======================================================
-    # Pipeline control
-    # ======================================================
-
-    def next_batch(
-        self,
-    ):
-        """
-        Release GuiPipelineLink and allow processing to continue.
-        """
-
-        if not self._waiting_for_next:
-            return
-
-        self.stop_audio()
-
-        self._waiting_for_next = (
-            False
-        )
-
-        self._set_controls_enabled(
-            False
-        )
-
-        self.statusBar().showMessage(
-            "Loading next batch..."
-        )
-
-        self.next_requested.emit()
+        self._update_pipeline_status()
 
     # ======================================================
     # Playback waveform
@@ -588,46 +365,39 @@ class ControlWindow(QMainWindow):
 
     def _combined_waveform(
         self,
+        buffers,
     ):
         """
-        Combine all AudioBuffers in the current batch for
-        playback.
+        Combine AudioBuffers for playback.
+
+        The caller explicitly supplies the buffer collection so
+        browsing state and processed pipeline state cannot be
+        mixed accidentally.
         """
 
-        if not self.current_buffers:
+        if not buffers:
             return None, None
 
         sample_rate = (
-            self.current_buffers[
-                0
-            ].sample_rate
+            buffers[0].sample_rate
         )
 
         first_waveform = (
-            self.current_buffers[
-                0
-            ].waveform
+            buffers[0].waveform
         )
 
-        #
-        # Determine expected channel count.
-        #
         if first_waveform.ndim == 1:
-
             channel_count = 1
-
         else:
-
             channel_count = (
                 first_waveform.shape[1]
             )
 
         waveforms = []
 
-        for buffer in self.current_buffers:
+        for buffer in buffers:
 
             if buffer.sample_rate != sample_rate:
-
                 raise ValueError(
                     "Visualiser received buffers "
                     "with different sample rates"
@@ -638,20 +408,13 @@ class ControlWindow(QMainWindow):
                 dtype=np.float32,
             )
 
-            #
-            # Normalise mono representation to:
-            #
-            #     samples x 1
-            #
             if waveform.ndim == 1:
-
                 waveform = waveform[
                     :,
-                    None
+                    None,
                 ]
 
             if waveform.shape[1] != channel_count:
-
                 raise ValueError(
                     "Visualiser received buffers "
                     "with different channel counts"
@@ -672,34 +435,77 @@ class ControlWindow(QMainWindow):
         )
 
     # ======================================================
-    # Volume
-    # ======================================================
-
-    def _volume_changed(
-        self,
-        value,
-    ):
-        self.volume_label.setText(
-            f"Volume: {value}%"
-        )
-
-    def _playback_gain(
-        self,
-    ):
-        return (
-            self.volume_slider.value()
-            / 100.0
-        )
-
-    # ======================================================
     # Playback
     # ======================================================
 
     def play_audio(
         self,
     ):
+        """Play the currently loaded source/browsing audio."""
+
+        self._play_buffers(
+            buffers=self.browsing_buffers,
+            volume_percent=(
+                self.browsing_view.volume_percent()
+            ),
+            playback_source="browsing",
+            description=(
+                f"{len(self.browsing_buffers)} browsing buffer(s)"
+            ),
+        )
+
+    def play_processed_audio(
+        self,
+    ):
+        """Play only the processed buffer currently being inspected."""
+
+        audio_buffer = (
+            self._current_processed_buffer()
+        )
+
+        if audio_buffer is None:
+            return
+
+        if audio_buffer.chunk_index is None:
+            description = (
+                "processed buffer "
+                f"{self.current_processed_buffer_index + 1}"
+            )
+        else:
+            description = (
+                "processed canonical chunk "
+                f"{audio_buffer.chunk_index}"
+            )
+
+        self._play_buffers(
+            buffers=[audio_buffer],
+            volume_percent=(
+                self.processed_view.volume_percent()
+            ),
+            playback_source="processed",
+            description=description,
+        )
+
+    def _play_buffers(
+        self,
+        buffers,
+        volume_percent,
+        playback_source,
+        description,
+    ):
+        """
+        Play an explicit collection of buffers through the shared audio
+        output device.
+
+        Browsing and processed views have separate controls/state, but
+        there is intentionally one QAudioSink: starting one source stops
+        the other rather than mixing two inspection streams together.
+        """
+
         waveform, sample_rate = (
-            self._combined_waveform()
+            self._combined_waveform(
+                buffers
+            )
         )
 
         if waveform is None:
@@ -707,12 +513,8 @@ class ControlWindow(QMainWindow):
 
         self.stop_audio()
 
-        #
-        # Always make a copy.
-        #
-        # Playback gain must never alter the pipeline's actual
-        # AudioBuffer data.
-        #
+        # Always make a copy. Playback gain must never alter
+        # an AudioBuffer's waveform in place.
         waveform = np.array(
             waveform,
             dtype=np.float32,
@@ -723,17 +525,11 @@ class ControlWindow(QMainWindow):
             waveform.shape[1]
         )
 
-        # --------------------------------------------------
-        # Playback-only amplification
-        # --------------------------------------------------
-
         waveform *= (
-            self._playback_gain()
+            float(volume_percent)
+            / 100.0
         )
 
-        #
-        # Float PCM must remain inside [-1, 1].
-        #
         waveform = np.clip(
             waveform,
             -1.0,
@@ -748,9 +544,7 @@ class ControlWindow(QMainWindow):
         # Qt audio format
         # ==================================================
 
-        audio_format = (
-            QAudioFormat()
-        )
+        audio_format = QAudioFormat()
 
         audio_format.setSampleRate(
             sample_rate
@@ -765,14 +559,12 @@ class ControlWindow(QMainWindow):
         )
 
         device = (
-            QMediaDevices
-            .defaultAudioOutput()
+            QMediaDevices.defaultAudioOutput()
         )
 
         if not device.isFormatSupported(
             audio_format
         ):
-
             self.statusBar().showMessage(
                 f"Unsupported audio format: "
                 f"{sample_rate} Hz, "
@@ -785,10 +577,8 @@ class ControlWindow(QMainWindow):
         # In-memory audio stream
         # ==================================================
 
-        self._audio_buffer = (
-            QBuffer(
-                self
-            )
+        self._audio_buffer = QBuffer(
+            self
         )
 
         self._audio_buffer.setData(
@@ -805,12 +595,10 @@ class ControlWindow(QMainWindow):
         # Output
         # ==================================================
 
-        self._audio_sink = (
-            QAudioSink(
-                device,
-                audio_format,
-                self,
-            )
+        self._audio_sink = QAudioSink(
+            device,
+            audio_format,
+            self,
         )
 
         self._audio_sink.setVolume(
@@ -821,37 +609,185 @@ class ControlWindow(QMainWindow):
             self._audio_buffer
         )
 
+        self._playback_source = (
+            playback_source
+        )
+
         duration = (
             len(waveform)
             / sample_rate
         )
 
         self.statusBar().showMessage(
-            f"Playing "
-            f"{len(self.current_buffers)} buffer(s)"
+            f"Playing {description}"
             f" | {duration:.2f}s"
-            f" | volume "
-            f"{self.volume_slider.value()}%"
+            f" | {sample_rate} Hz"
+            f" | volume {volume_percent}%"
         )
+
+    def stop_browsing_audio(
+        self,
+    ):
+        self._stop_audio_if_source(
+            "browsing"
+        )
+
+    def stop_processed_audio(
+        self,
+    ):
+        self._stop_audio_if_source(
+            "processed"
+        )
+
+    def _stop_audio_if_source(
+        self,
+        playback_source,
+    ):
+        if (
+            self._playback_source
+            == playback_source
+        ):
+            self.stop_audio()
 
     def stop_audio(
         self,
     ):
         if self._audio_sink is not None:
-
             self._audio_sink.reset()
-
             self._audio_sink.deleteLater()
-
             self._audio_sink = None
 
         if self._audio_buffer is not None:
-
             self._audio_buffer.close()
-
             self._audio_buffer.deleteLater()
-
             self._audio_buffer = None
+
+        self._playback_source = None
+
+    # ======================================================
+    # Processed audio inspection
+    # ======================================================
+
+    def _current_processed_buffer(
+        self,
+    ):
+        if not self.processed_buffers:
+            return None
+
+        if not (
+            0
+            <= self.current_processed_buffer_index
+            < len(self.processed_buffers)
+        ):
+            return None
+
+        return self.processed_buffers[
+            self.current_processed_buffer_index
+        ]
+
+    @Slot(int)
+    def _processed_buffer_selected(
+        self,
+        buffer_index: int,
+    ):
+        self._select_processed_buffer(
+            buffer_index
+        )
+
+    def _select_processed_buffer(
+        self,
+        buffer_index: int,
+    ):
+        """
+        Select one processed AudioBuffer from the current pipeline batch
+        and request its spectrogram without blocking the GUI thread.
+        """
+
+        if not self.processed_buffers:
+            self.processed_view.clear_processed_audio()
+            return
+
+        if not (
+            0
+            <= buffer_index
+            < len(self.processed_buffers)
+        ):
+            return
+
+        self._stop_audio_if_source(
+            "processed"
+        )
+
+        self.current_processed_buffer_index = (
+            buffer_index
+        )
+
+        audio_buffer = (
+            self._current_processed_buffer()
+        )
+
+        self.processed_view.set_buffer_selection(
+            index=buffer_index,
+            buffer_count=len(
+                self.processed_buffers
+            ),
+            audio_buffer=audio_buffer,
+        )
+
+        # The old image belongs to another processed buffer, so remove
+        # it immediately while the new FFT is calculated.
+        self.processed_view.clear_spectrogram()
+
+        self._processed_spectrogram_request_id += 1
+
+        request_id = (
+            self._processed_spectrogram_request_id
+        )
+
+        self.processed_spectrogram_jobs.submit(
+            request_id,
+            partial(
+                calculate_spectrogram,
+                waveform=audio_buffer.waveform,
+                sample_rate=audio_buffer.sample_rate,
+            ),
+        )
+
+    @Slot(int, object)
+    def _processed_spectrogram_ready(
+        self,
+        request_id: int,
+        result,
+    ):
+        if (
+            request_id
+            != self._processed_spectrogram_request_id
+        ):
+            return
+
+        self.processed_view.set_spectrogram_result(
+            result
+        )
+
+    @Slot(int, str)
+    def _processed_spectrogram_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._processed_spectrogram_request_id
+        ):
+            return
+
+        self.processed_view.clear_spectrogram()
+
+        self.statusBar().showMessage(
+            "Could not calculate processed spectrogram: "
+            f"{message}"
+        )
+
     # ======================================================
     # Recording navigation
     # ======================================================
@@ -874,19 +810,41 @@ class ControlWindow(QMainWindow):
             self.current_audio_packet = None
             self.current_chunk_index = 0
             self.current_num_chunks = 0
+            self.browsing_buffers = []
 
-            self.chunk_slider.setEnabled(
+            # Invalidate any result already being loaded for the
+            # previous selection.
+            self._browsing_request_id += 1
+            self._embedding_cache_request_id += 1
+            self._interactive_embedding_request_id += 1
+            self._interactive_embeddings_by_key.clear()
+
+            self.processed_view.clear_recording_embeddings(
+                "No recording selected"
+            )
+
+            self.processed_view.set_selected_embedding_status(
+                "Selected chunk embedding: no recording selected"
+            )
+
+            self._set_browsing_controls_enabled(
                 False
             )
 
-            self.chunk_label.setText(
+            self.browsing_view.set_chunk_range(
+                0
+            )
+
+            self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
+
+            self.browsing_view.clear_spectrogram()
 
             return
 
         packet_index = (
-            self.recording_selector.itemData(
+            self.browsing_view.recording_packet_index(
                 selector_index
             )
         )
@@ -895,20 +853,23 @@ class ControlWindow(QMainWindow):
             packet_index
         ]
 
-        self.current_audio_packet = (
-            packet
-        )
-
+        self.current_audio_packet = packet
         self.current_chunk_index = 0
+        self._interactive_embeddings_by_key.clear()
+
+        self.processed_view.set_selected_embedding_status(
+            "Selected chunk embedding: waiting for source audio..."
+        )
 
         if packet.duration is None:
             raise ValueError(
                 "Selected AudioPacket has no duration"
             )
 
-        self.current_num_chunks = math.ceil(
-            packet.duration
-            / self.chunk_duration_s
+        self.current_num_chunks = (
+            self.chunk_grid.chunk_count(
+                packet.duration
+            )
         )
 
         if self.current_num_chunks <= 0:
@@ -916,35 +877,193 @@ class ControlWindow(QMainWindow):
                 "Selected AudioPacket has no canonical chunks"
             )
 
-        #
-        # Prevent changing the slider range/value from firing a
-        # spurious chunk-selection event while recording state
-        # is still being updated.
-        #
-        self.chunk_slider.blockSignals(
-            True
+        self.browsing_view.set_chunk_range(
+            self.current_num_chunks
         )
 
-        self.chunk_slider.setRange(
-            0,
-            self.current_num_chunks - 1,
-        )
-
-        self.chunk_slider.setValue(
-            0
-        )
-
-        self.chunk_slider.blockSignals(
-            False
-        )
-
-        self.chunk_slider.setEnabled(
-            True
-        )
-
+        self._request_cached_embeddings()
         self._update_chunk_label()
-        self._load_selected_chunk()
-    
+        self._request_selected_chunk()
+
+    def _selected_recording_id(
+        self,
+    ):
+        if self.current_audio_packet is None:
+            return None
+
+        return self.current_audio_packet.recording_id
+
+    def _request_cached_embeddings(
+        self,
+    ):
+        """
+        Load every embedding compatible with the active pipeline for
+        the recording selected in BrowsingView.
+
+        The cache API remains synchronous; this GUI chooses to execute the
+        call through a background job runner.
+        """
+
+        recording_id = (
+            self._selected_recording_id()
+        )
+
+        self._embedding_cache_request_id += 1
+
+        request_id = (
+            self._embedding_cache_request_id
+        )
+
+        if recording_id is None:
+            self.processed_view.clear_recording_embeddings(
+                "Selected recording has no recording_id"
+            )
+            return
+
+        self.processed_view.clear_recording_embeddings(
+            f"Loading cached {self.embedding_name!r} embeddings..."
+        )
+
+        self.embedding_cache_jobs.submit(
+            request_id,
+            partial(
+                self.embedding_cache.list_embeddings,
+                recording_id=recording_id,
+                pipeline_hash=self.pipeline_hash,
+                embedding_name=self.embedding_name,
+            ),
+        )
+
+    @Slot(int, object)
+    def _cached_embeddings_loaded(
+        self,
+        request_id: int,
+        embeddings,
+    ):
+        if (
+            request_id
+            != self._embedding_cache_request_id
+        ):
+            return
+
+        self.processed_view.set_recording_embeddings(
+            embeddings
+        )
+
+        if self._interactive_embeddings_by_key:
+            self.processed_view.add_embeddings(
+                self._interactive_embeddings_by_key.values()
+            )
+
+        # A live pipeline batch may have arrived while the cache was
+        # being scanned. Merge the currently held matching buffers back
+        # into the freshly loaded cache view so those points are not lost.
+        selected_recording_id = (
+            self._selected_recording_id()
+        )
+
+        matching_buffers = [
+            buffer
+            for buffer
+            in self.processed_buffers
+            if buffer.recording_id
+            == selected_recording_id
+        ]
+
+        if matching_buffers:
+            self.processed_view.add_buffers(
+                matching_buffers
+            )
+
+    @Slot(int, str)
+    def _cached_embeddings_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._embedding_cache_request_id
+        ):
+            return
+
+        self.processed_view.clear_recording_embeddings(
+            "Could not load cached embeddings"
+        )
+
+        self.statusBar().showMessage(
+            f"Could not load cached embeddings: {message}"
+        )
+
+    @Slot(int, object)
+    def _interactive_embedding_ready(
+        self,
+        request_id: int,
+        embedding,
+    ):
+        if (
+            request_id
+            != self._interactive_embedding_request_id
+        ):
+            return
+
+        recording_id = embedding.get(
+            "recording_id"
+        )
+
+        if (
+            recording_id
+            != self._selected_recording_id()
+        ):
+            return
+
+        chunk_index = embedding.get(
+            "chunk_index"
+        )
+
+        key = (
+            str(recording_id),
+            int(chunk_index),
+        )
+
+        self._interactive_embeddings_by_key[
+            key
+        ] = embedding
+
+        self.processed_view.add_embeddings(
+            [embedding]
+        )
+
+        if embedding.get(
+            "loaded_from_cache",
+            False,
+        ):
+            source_text = "loaded from cache"
+        else:
+            source_text = "computed and cached"
+
+        self.processed_view.set_selected_embedding_status(
+            f"Selected chunk embedding: chunk {chunk_index} "
+            f"{source_text}"
+        )
+
+    @Slot(int, str)
+    def _interactive_embedding_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._interactive_embedding_request_id
+        ):
+            return
+
+        self.processed_view.set_selected_embedding_status(
+            "Selected chunk embedding failed: "
+            f"{message}"
+        )
+
     def _chunk_selected(
         self,
         chunk_index: int,
@@ -956,142 +1075,311 @@ class ControlWindow(QMainWindow):
         if self.current_audio_packet is None:
             return
 
-        self.current_chunk_index = (
-            chunk_index
-        )
+        self.current_chunk_index = chunk_index
 
         self._update_chunk_label()
-        self._load_selected_chunk()
-    
-    def _load_selected_chunk(
+        self._request_selected_chunk()
+
+    def _request_selected_chunk(
         self,
     ):
+        """
+        Schedule the currently selected chunk for background loading.
+
+        This method runs on the Qt GUI thread, so it deliberately does
+        no file I/O. It only updates lightweight GUI state and submits
+        a request to the background job runner.
+        """
+
         if self.current_audio_packet is None:
             return
 
-        self.stop_audio()
-
-        start_s = (
-            self.current_chunk_index
-            * self.chunk_duration_s
+        self._stop_audio_if_source(
+            "browsing"
         )
 
-        waveform, sample_rate = (
-            self.audio_reader.read(
+        # The previous audio/spectrogram no longer represents the
+        # slider position. Clear it immediately while the new request
+        # is loading.
+        self.browsing_buffers = []
+        self.browsing_view.clear_spectrogram()
+
+        (
+            start_s,
+            end_s,
+        ) = self.chunk_grid.chunk_bounds(
+            self.current_chunk_index,
+            total_duration_s=(
+                self.current_audio_packet.duration
+            ),
+        )
+
+        self._browsing_request_id += 1
+        self._interactive_embedding_request_id += 1
+
+        request_id = (
+            self._browsing_request_id
+        )
+
+        self.processed_view.set_selected_embedding_status(
+            f"Selected chunk embedding: waiting for chunk "
+            f"{self.current_chunk_index} audio..."
+        )
+
+        # Do not allow playback of the previously loaded chunk while
+        # the UI is pointing at a new chunk. The slider itself remains
+        # enabled and responsive.
+        self._set_browsing_controls_enabled(
+            False
+        )
+
+        self.statusBar().showMessage(
+            f"Loading chunk {self.current_chunk_index}..."
+        )
+
+        self.browsing_audio_jobs.submit(
+            request_id,
+            partial(
+                self.audio_reader.read_buffer,
                 packet=self.current_audio_packet,
+                chunk_index=self.current_chunk_index,
                 start_s=start_s,
-                duration_s=self.chunk_duration_s,
-            )
+                duration_s=(end_s - start_s),
+            ),
         )
 
-        audio_buffer = AudioBuffer(
-            packet=self.current_audio_packet,
-            waveform=waveform,
-            sample_rate=sample_rate,
-            start_offset_s=start_s,
-            valid_samples=len(waveform),
-            left_context_samples=0,
-            right_context_samples=0,
-            chunk_index=self.current_chunk_index,
-        )
+    @Slot(int, object)
+    def _browsing_audio_loaded(
+        self,
+        request_id: int,
+        audio_buffer,
+    ):
+        """
+        Accept current source audio and schedule its spectrogram.
 
-        self.current_buffers = [
+        Playback can become available as soon as audio loading finishes.
+        The more expensive FFT is requested separately so it never runs
+        on the Qt GUI thread.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_buffers = [
             audio_buffer
         ]
 
-        self.spectrogram.set_buffers(
-            self.current_buffers
-        )
-
-        self.play_button.setEnabled(
+        self._set_browsing_controls_enabled(
             True
         )
 
-        self.stop_button.setEnabled(
-            True
+        self.statusBar().showMessage(
+            f"Loaded chunk {audio_buffer.chunk_index}; "
+            "calculating spectrogram..."
         )
-    
+
+        self.browsing_spectrogram_jobs.submit(
+            request_id,
+            partial(
+                calculate_spectrogram,
+                waveform=audio_buffer.waveform,
+                sample_rate=audio_buffer.sample_rate,
+            ),
+        )
+
+        embedding_request_id = (
+            self._interactive_embedding_request_id
+        )
+
+        self.processed_view.set_selected_embedding_status(
+            f"Selected chunk embedding: checking chunk "
+            f"{audio_buffer.chunk_index}..."
+        )
+
+        self.embedding_request_jobs.submit(
+            embedding_request_id,
+            partial(
+                self.embedding_request.run,
+                audio_buffer,
+            ),
+        )
+
+    @Slot(int, object)
+    def _browsing_spectrogram_ready(
+        self,
+        request_id: int,
+        result,
+    ):
+        """
+        Draw a spectrogram only when it still belongs to the current
+        browsing selection.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_view.set_spectrogram_result(
+            result
+        )
+
+        self.statusBar().showMessage(
+            f"Loaded chunk {self.current_chunk_index}"
+        )
+
+    @Slot(int, str)
+    def _browsing_spectrogram_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        """
+        Report a current spectrogram failure without discarding the
+        successfully loaded audio.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_view.clear_spectrogram()
+
+        self.statusBar().showMessage(
+            f"Audio loaded, but spectrogram failed: {message}"
+        )
+
+    @Slot(int, str)
+    def _browsing_audio_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        """
+        Report an error only when it belongs to the current request.
+        """
+
+        if (
+            request_id
+            != self._browsing_request_id
+        ):
+            return
+
+        self.browsing_buffers = []
+        self.browsing_view.clear_spectrogram()
+
+        self._set_browsing_controls_enabled(
+            False
+        )
+
+        self.processed_view.set_selected_embedding_status(
+            "Selected chunk embedding: source audio unavailable"
+        )
+
+        self.statusBar().showMessage(
+            f"Could not load chunk: {message}"
+        )
+
     def _update_chunk_label(
         self,
     ):
         if self.current_audio_packet is None:
-            self.chunk_label.setText(
+            self.browsing_view.set_chunk_label(
                 "No recording selected"
             )
 
+            self.browsing_view.clear_spectrogram()
+
             return
 
-        start_s = (
-            self.current_chunk_index
-            * self.chunk_duration_s
+        (
+            start_s,
+            end_s,
+        ) = self.chunk_grid.chunk_bounds(
+            self.current_chunk_index,
+            total_duration_s=(
+                self.current_audio_packet.duration
+            ),
         )
 
-        end_s = min(
-            start_s
-            + self.chunk_duration_s,
-            self.current_audio_packet.duration,
-        )
-
-        self.chunk_label.setText(
+        self.browsing_view.set_chunk_label(
             f"{self.current_chunk_index} "
             f"({start_s:.1f}s - {end_s:.1f}s)"
         )
-        
+
     # ======================================================
     # Controls
     # ======================================================
 
-    def _set_controls_enabled(
+    def _set_browsing_controls_enabled(
         self,
         enabled,
     ):
-        self.play_button.setEnabled(
-            enabled
-        )
-
-        self.stop_button.setEnabled(
-            enabled
-        )
-
-        self.next_button.setEnabled(
+        self.browsing_view.set_browsing_controls_enabled(
             enabled
         )
 
     # ======================================================
-    # Status
+    # Processed status
     # ======================================================
 
-    def _update_status(
+    def _update_pipeline_status(
         self,
     ):
-        waveform, sample_rate = (
-            self._combined_waveform()
-        )
-
-        if waveform is None:
-
-            self.statusBar().showMessage(
-                "Waiting for audio..."
+        if not self.processed_buffers:
+            self.processed_view.set_status(
+                "Waiting for processed audio..."
             )
 
             return
 
+        first_buffer = (
+            self.processed_buffers[0]
+        )
+
+        sample_rate = (
+            first_buffer.sample_rate
+        )
+
+        first_waveform = np.asarray(
+            first_buffer.waveform
+        )
+
+        if first_waveform.ndim == 1:
+            channel_count = 1
+        else:
+            channel_count = (
+                first_waveform.shape[1]
+            )
+
+        total_samples = sum(
+            len(buffer.waveform)
+            for buffer in self.processed_buffers
+        )
+
         duration = (
-            len(waveform)
+            total_samples
             / sample_rate
         )
 
         total_embeddings = len(
-            self.embedding_visualiser
+            self.processed_view
+            .embedding_visualiser
             .embedding_vectors
         )
 
-        self.statusBar().showMessage(
-            f"{len(self.current_buffers)} buffer(s)"
+        self.processed_view.set_status(
+            f"Latest batch: {len(self.processed_buffers)} processed buffer(s)"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
-            f" | {waveform.shape[1]} channel(s)"
-            f" | {total_embeddings} embeddings seen"
+            f" | {channel_count} channel(s)"
+            f" | {total_embeddings} selected-recording embeddings"
         )
 
     # ======================================================
@@ -1104,17 +1392,12 @@ class ControlWindow(QMainWindow):
     ):
         self.stop_audio()
 
-        #
-        # Make sure the worker thread isn't permanently stuck
-        # waiting on GuiPipelineLink if the application closes.
-        #
-        if self._waiting_for_next:
-
-            self._waiting_for_next = (
-                False
-            )
-
-            self.next_requested.emit()
+        self.browsing_audio_jobs.shutdown()
+        self.browsing_spectrogram_jobs.shutdown()
+        self.processed_spectrogram_jobs.shutdown()
+        self.embedding_cache_jobs.shutdown()
+        self.embedding_request_jobs.shutdown()
+        self.processed_view.shutdown()
 
         super().closeEvent(
             event

@@ -8,21 +8,19 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from src.SpectrogramData import calculate_spectrogram
+
 
 class Spectrogram(QWidget):
     """
-    Displays a spectrogram for one or more AudioBuffers.
+    Render display-ready spectrogram data.
 
-    This component knows nothing about:
+    Browsing code should calculate spectrograms away from the GUI thread
+    and call set_result() on the Qt GUI thread.
 
-        - pipeline control
-        - playback
-        - embeddings
-        - Next / Stop / Play
-
-    Its only responsibility is:
-
-        AudioBuffers -> combined waveform -> spectrogram
+    set_buffers() remains as a synchronous compatibility helper for
+    older callers, but it should not be used by latency-sensitive GUI
+    paths because it performs the FFT in the calling thread.
     """
 
     def __init__(
@@ -30,8 +28,6 @@ class Spectrogram(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-
-        self.current_buffers = []
 
         # ==================================================
         # Plot
@@ -93,7 +89,48 @@ class Spectrogram(QWidget):
         )
 
     # ======================================================
-    # Public interface
+    # Preferred public interface
+    # ======================================================
+
+    def set_result(
+        self,
+        result,
+    ):
+        """
+        Render an already-calculated SpectrogramResult.
+
+        This method performs only GUI work and is intended to run on
+        the Qt GUI thread.
+        """
+
+        self.image.setImage(
+            result.image,
+            autoLevels=True,
+        )
+
+        self.image.setRect(
+            QRectF(
+                0,
+                0,
+                result.duration_s,
+                result.max_frequency_hz,
+            )
+        )
+
+        self.plot.setXRange(
+            0,
+            result.duration_s,
+            padding=0,
+        )
+
+        self.plot.setYRange(
+            0,
+            result.max_frequency_hz,
+            padding=0,
+        )
+
+    # ======================================================
+    # Compatibility interface
     # ======================================================
 
     def set_buffers(
@@ -101,106 +138,46 @@ class Spectrogram(QWidget):
         buffers,
     ):
         """
-        Display all supplied AudioBuffers as one continuous
-        spectrogram.
+        Synchronously calculate and display AudioBuffers.
+
+        Kept for older visualiser code. New interactive browsing code
+        should calculate asynchronously and call set_result() instead.
         """
 
-        self.current_buffers = list(
+        buffers = list(
             buffers
         )
 
-        if not self.current_buffers:
+        if not buffers:
             self.clear()
             return
 
         waveform, sample_rate = (
-            self._combined_waveform()
-        )
-
-        # --------------------------------------------------
-        # Convert to mono for visualisation
-        # --------------------------------------------------
-
-        if waveform.ndim == 1:
-
-            samples = waveform
-
-        else:
-
-            samples = waveform.mean(
-                axis=1
-            )
-
-        # --------------------------------------------------
-        # Spectrogram
-        # --------------------------------------------------
-
-        spectrogram = (
-            self._make_spectrogram(
-                samples
+            self._combined_waveform(
+                buffers
             )
         )
 
-        duration = (
-            len(samples)
-            / sample_rate
+        result = calculate_spectrogram(
+            waveform=waveform,
+            sample_rate=sample_rate,
         )
 
-        max_frequency = (
-            sample_rate / 2
+        self.set_result(
+            result
         )
 
-        self.image.setImage(
-            spectrogram,
-            autoLevels=True,
-        )
-
-        # --------------------------------------------------
-        # Map image coordinates to seconds / Hz
-        # --------------------------------------------------
-
-        self.image.setRect(
-            QRectF(
-                0,
-                0,
-                duration,
-                max_frequency,
-            )
-        )
-
-        self.plot.setXRange(
-            0,
-            duration,
-            padding=0,
-        )
-
-        self.plot.setYRange(
-            0,
-            max_frequency,
-            padding=0,
-        )
-
-    # ======================================================
-    # Waveform
-    # ======================================================
-
+    @staticmethod
     def _combined_waveform(
-        self,
+        buffers,
     ):
-        """
-        Concatenate the supplied buffers in order.
-        """
-
         sample_rate = (
-            self.current_buffers[
-                0
-            ].sample_rate
+            buffers[0].sample_rate
         )
 
-        for buffer in self.current_buffers:
+        for buffer in buffers:
 
             if buffer.sample_rate != sample_rate:
-
                 raise ValueError(
                     "Spectrogram received buffers "
                     "with different sample rates"
@@ -209,8 +186,7 @@ class Spectrogram(QWidget):
         waveform = np.concatenate(
             [
                 buffer.waveform
-                for buffer
-                in self.current_buffers
+                for buffer in buffers
             ],
             axis=0,
         )
@@ -221,97 +197,10 @@ class Spectrogram(QWidget):
         )
 
     # ======================================================
-    # Spectrogram calculation
-    # ======================================================
-
-    @staticmethod
-    def _make_spectrogram(
-        samples,
-        n_fft=1024,
-        hop_length=256,
-    ):
-        """
-        Compute an STFT power spectrogram in dB.
-
-        Input:
-
-            samples.shape == (samples,)
-
-        Output:
-
-            frequency x time
-        """
-
-        samples = np.asarray(
-            samples,
-            dtype=np.float32,
-        )
-
-        if len(samples) < n_fft:
-
-            samples = np.pad(
-                samples,
-                (
-                    0,
-                    n_fft
-                    - len(samples),
-                ),
-            )
-
-        window = np.hanning(
-            n_fft
-        )
-
-        frames = (
-            np.lib.stride_tricks
-            .sliding_window_view(
-                samples,
-                n_fft,
-            )[::hop_length]
-        )
-
-        frames = (
-            frames
-            * window
-        )
-
-        spectrum = np.fft.rfft(
-            frames,
-            axis=1,
-        )
-
-        power = (
-            np.abs(
-                spectrum
-            ) ** 2
-        )
-
-        power_db = (
-            10
-            * np.log10(
-                power
-                + 1e-12
-            )
-        )
-
-        #
-        # STFT is:
-        #
-        #     time x frequency
-        #
-        # ImageItem expects:
-        #
-        #     frequency x time
-        #
-        return power_db.T
-
-    # ======================================================
     # Clear
     # ======================================================
 
     def clear(
         self,
     ):
-        self.current_buffers = []
-
         self.image.clear()

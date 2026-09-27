@@ -1,28 +1,38 @@
 import numpy as np
 import pyqtgraph as pg
 
+from PySide6.QtCore import Slot
+
+from functools import partial
+
 from PySide6.QtWidgets import (
     QWidget,
     QLabel,
     QVBoxLayout,
 )
 
+from src.EmbeddingPCA import calculate_embedding_pca
+from src.LatestJobRunner import LatestJobRunner
+
 
 class EmbeddingSpaceVisualiser(QWidget):
     """
-    Persistent 2D PCA visualisation of AudioBuffer embeddings.
+    2D PCA visualisation of embeddings for the selected recording.
 
-    Historical buffers:
-        circles
+    Cached embeddings can replace the complete displayed recording via
+    set_embeddings(). Processed AudioBuffers can then be merged into that
+    same view via add_buffers().
 
-    Buffers in the currently displayed batch:
-        triangles
+    Canonical embeddings are identified by:
 
-    Colour:
-        progresses through viridis according to the order
-        in which embeddings were first received.
+        (recording_id, chunk_index)
 
-    This component owns all embedding visualisation state.
+    rather than Python object identity. This prevents a cached chunk and
+    the same chunk later arriving through the live pipeline from appearing
+    twice.
+
+    Current pipeline chunks are highlighted as triangles. Other embeddings
+    are shown as circles.
     """
 
     def __init__(
@@ -32,25 +42,47 @@ class EmbeddingSpaceVisualiser(QWidget):
     ):
         super().__init__(parent)
 
-        self.embedding_name = (
-            embedding_name
-        )
+        self.embedding_name = embedding_name
 
         # ==================================================
-        # Persistent history
+        # Embedding state
         # ==================================================
 
-        self.buffers = []
+        # Ordered records. Each record contains:
+        #
+        #     key
+        #     values
+        #     data
+        #
+        # "data" is either the original cache dictionary or the live
+        # AudioBuffer, and is attached to the scatter point for future
+        # interaction.
+        self._records = []
+        self._record_index_by_key = {}
 
+        # Kept as a public list for compatibility with existing status
+        # code elsewhere in the application.
         self.embedding_vectors = []
 
-        self._seen_buffers = set()
+        self._current_keys = set()
 
-        #
-        # Object IDs of buffers belonging to the currently
-        # displayed batch.
-        #
-        self._current_buffer_ids = set()
+        # Each dataset change invalidates the previous projection. The
+        # job runner retains at most one pending request, so rapid cache/live
+        # updates cannot build a long queue of obsolete SVD calculations.
+        self._pca_request_id = 0
+
+        self._pca_jobs = LatestJobRunner(
+            name="embedding-pca-jobs",
+            parent=self,
+        )
+
+        self._pca_jobs.ready.connect(
+            self._pca_ready
+        )
+
+        self._pca_jobs.failed.connect(
+            self._pca_failed
+        )
 
         # ==================================================
         # Plot
@@ -59,7 +91,7 @@ class EmbeddingSpaceVisualiser(QWidget):
         self.plot = pg.PlotWidget()
 
         self.plot.setTitle(
-            "Embedding space (cumulative PCA)"
+            "Embedding space (selected recording PCA)"
         )
 
         self.plot.setLabel(
@@ -78,9 +110,7 @@ class EmbeddingSpaceVisualiser(QWidget):
             alpha=0.2,
         )
 
-        self.scatter = (
-            pg.ScatterPlotItem()
-        )
+        self.scatter = pg.ScatterPlotItem()
 
         self.plot.addItem(
             self.scatter
@@ -123,104 +153,210 @@ class EmbeddingSpaceVisualiser(QWidget):
     # Public interface
     # ======================================================
 
+    def set_embeddings(
+        self,
+        embeddings,
+    ):
+        """
+        Replace the complete embedding dataset shown by the plot.
+
+        This is used when the user selects a recording and its compatible
+        cached embeddings have been loaded from disk.
+        """
+
+        self._records.clear()
+        self._record_index_by_key.clear()
+        self.embedding_vectors.clear()
+        self._current_keys.clear()
+
+        for embedding in embeddings:
+            record = self._record_from_cached_embedding(
+                embedding
+            )
+
+            if record is None:
+                continue
+
+            self._upsert_record(
+                record
+            )
+
+        self._request_redraw()
+
+    def add_embeddings(
+        self,
+        embeddings,
+    ):
+        """
+        Merge cache-shaped embeddings into the selected recording view.
+
+        Unlike add_buffers(), this does not change the set of points marked
+        as belonging to the current live pipeline batch.
+        """
+
+        for embedding in embeddings:
+            record = self._record_from_cached_embedding(
+                embedding
+            )
+
+            if record is None:
+                continue
+
+            self._upsert_record(
+                record
+            )
+
+        self._request_redraw()
+
     def add_buffers(
         self,
         buffers,
     ):
         """
-        Add buffers to the persistent embedding history.
+        Merge processed AudioBuffers into the selected recording view.
 
-        The supplied buffers also become the current batch and
-        are highlighted as triangles.
+        The supplied buffers become the current pipeline chunks and are
+        highlighted as triangles. If one of them represents a canonical
+        chunk already loaded from cache, that point is updated rather than
+        duplicated.
         """
 
         buffers = list(
             buffers
         )
 
-        self._current_buffer_ids = {
-            id(buffer)
-            for buffer
-            in buffers
-        }
-
-        # --------------------------------------------------
-        # Add previously unseen embeddings
-        # --------------------------------------------------
+        current_keys = set()
 
         for buffer in buffers:
-
-            object_id = id(
+            record = self._record_from_buffer(
                 buffer
             )
 
-            if object_id in self._seen_buffers:
+            if record is None:
                 continue
 
-            vector = (
-                self._get_embedding_vector(
-                    buffer
-                )
+            current_keys.add(
+                record["key"]
             )
 
-            if vector is None:
-                continue
-
-            # ----------------------------------------------
-            # Ensure dimensions remain consistent
-            # ----------------------------------------------
-
-            if self.embedding_vectors:
-
-                expected_size = (
-                    self.embedding_vectors[
-                        0
-                    ].size
-                )
-
-                if vector.size != expected_size:
-
-                    raise ValueError(
-                        "EmbeddingSpaceVisualiser "
-                        "received embeddings with "
-                        "different dimensions"
-                    )
-
-            self.buffers.append(
-                buffer
+            self._upsert_record(
+                record
             )
 
-            self.embedding_vectors.append(
-                vector
-            )
+        self._current_keys = current_keys
 
-            self._seen_buffers.add(
-                object_id
-            )
+        self._request_redraw()
 
-        self._redraw()
-
-    # ======================================================
-    # Embedding extraction
-    # ======================================================
-
-    def _get_embedding_vector(
+    def set_status(
         self,
-        buffer,
+        text,
     ):
-        embedding = (
-            buffer.embeddings.get(
-                self.embedding_name
-            )
+        self.status.setText(
+            text
         )
 
-        if embedding is None:
-            return None
+    # ======================================================
+    # Record conversion
+    # ======================================================
+
+    def _record_from_cached_embedding(
+        self,
+        embedding,
+    ):
+        recording_id = embedding.get(
+            "recording_id"
+        )
+
+        chunk_index = embedding.get(
+            "chunk_index"
+        )
 
         values = embedding.get(
             "values"
         )
 
+        key = self._canonical_key(
+            recording_id=recording_id,
+            chunk_index=chunk_index,
+        )
+
+        if key is None:
+            return None
+
+        vector = self._normalise_vector(
+            values
+        )
+
+        if vector is None:
+            return None
+
+        return {
+            "key": key,
+            "values": vector,
+            "data": embedding,
+        }
+
+    def _record_from_buffer(
+        self,
+        buffer,
+    ):
+        embedding = buffer.embeddings.get(
+            self.embedding_name
+        )
+
+        if embedding is None:
+            return None
+
+        key = self._canonical_key(
+            recording_id=buffer.recording_id,
+            chunk_index=buffer.chunk_index,
+        )
+
+        if key is None:
+            # Preserve compatibility for non-canonical callers such as
+            # older visualisation code. Such objects can still be shown,
+            # but they cannot deduplicate against a cache entry.
+            key = (
+                "object",
+                id(buffer),
+            )
+
+        vector = self._normalise_vector(
+            embedding.get(
+                "values"
+            )
+        )
+
+        if vector is None:
+            return None
+
+        return {
+            "key": key,
+            "values": vector,
+            "data": buffer,
+        }
+
+    @staticmethod
+    def _canonical_key(
+        recording_id,
+        chunk_index,
+    ):
+        if recording_id is None:
+            return None
+
+        if chunk_index is None:
+            return None
+
+        return (
+            "chunk",
+            str(recording_id),
+            int(chunk_index),
+        )
+
+    @staticmethod
+    def _normalise_vector(
+        values,
+    ):
         if values is None:
             return None
 
@@ -237,37 +373,170 @@ class EmbeddingSpaceVisualiser(QWidget):
         )
 
     # ======================================================
-    # Drawing
+    # State update
     # ======================================================
 
-    def _redraw(
+    def _upsert_record(
         self,
+        record,
     ):
-        if not self.embedding_vectors:
+        vector = record[
+            "values"
+        ]
 
-            self.scatter.clear()
+        if self.embedding_vectors:
+            expected_size = (
+                self.embedding_vectors[0].size
+            )
 
-            self.status.setText(
-                f"No {self.embedding_name!r} "
-                f"embeddings seen yet"
+            if vector.size != expected_size:
+                raise ValueError(
+                    "EmbeddingSpaceVisualiser received embeddings "
+                    "with different dimensions"
+                )
+
+        key = record[
+            "key"
+        ]
+
+        existing_index = (
+            self._record_index_by_key.get(
+                key
+            )
+        )
+
+        if existing_index is None:
+            self._record_index_by_key[
+                key
+            ] = len(
+                self._records
+            )
+
+            self._records.append(
+                record
+            )
+
+            self.embedding_vectors.append(
+                vector
             )
 
             return
 
-        # --------------------------------------------------
-        # PCA over everything seen so far
-        # --------------------------------------------------
+        self._records[
+            existing_index
+        ] = record
 
-        matrix = np.stack(
-            self.embedding_vectors,
-            axis=0,
+        self.embedding_vectors[
+            existing_index
+        ] = vector
+
+    # ======================================================
+    # PCA scheduling and drawing
+    # ======================================================
+
+    def _request_redraw(
+        self,
+    ):
+        """
+        Schedule PCA for the current embedding dataset.
+
+        The Qt thread only snapshots references to the current immutable
+        embedding vectors and returns immediately. Matrix assembly and SVD
+        happen in a LatestJobRunner.
+        """
+
+        self._pca_request_id += 1
+
+        request_id = (
+            self._pca_request_id
         )
 
-        (
-            coordinates,
-            explained_variance,
-        ) = self._pca_2d(
-            matrix
+        if not self.embedding_vectors:
+            self.scatter.clear()
+
+            self.status.setText(
+                f"No compatible {self.embedding_name!r} "
+                "embeddings for this recording"
+            )
+
+            return
+
+        point_count = len(
+            self.embedding_vectors
+        )
+
+        self.status.setText(
+            f"Calculating PCA for {point_count} compatible embeddings..."
+        )
+
+        vectors = tuple(
+            self.embedding_vectors
+        )
+
+        self._pca_jobs.submit(
+            request_id,
+            partial(
+                calculate_embedding_pca,
+                vectors,
+            ),
+        )
+
+    @Slot(int, object)
+    def _pca_ready(
+        self,
+        request_id: int,
+        result,
+    ):
+        if (
+            request_id
+            != self._pca_request_id
+        ):
+            return
+
+        if (
+            len(result.coordinates)
+            != len(self._records)
+        ):
+            # The dataset changed while the result was in flight. A newer
+            # request should already exist, so this result is not drawable.
+            return
+
+        self._draw_pca_result(
+            result
+        )
+
+    @Slot(int, str)
+    def _pca_failed(
+        self,
+        request_id: int,
+        message: str,
+    ):
+        if (
+            request_id
+            != self._pca_request_id
+        ):
+            return
+
+        self.scatter.clear()
+
+        self.status.setText(
+            f"PCA failed: {message}"
+        )
+
+    def _draw_pca_result(
+        self,
+        result,
+    ):
+        """
+        Render an already-computed PCA result on the Qt GUI thread.
+        """
+
+        coordinates = (
+            result.coordinates
+        )
+
+        explained_variance = (
+            result.explained_variance
         )
 
         point_count = len(
@@ -282,16 +551,14 @@ class EmbeddingSpaceVisualiser(QWidget):
             "viridis"
         )
 
-        colours = (
-            colourmap.getLookupTable(
-                start=0.0,
-                stop=1.0,
-                nPts=max(
-                    point_count,
-                    2,
-                ),
-                alpha=True,
-            )
+        colours = colourmap.getLookupTable(
+            start=0.0,
+            stop=1.0,
+            nPts=max(
+                point_count,
+                2,
+            ),
+            alpha=True,
         )
 
         # ==================================================
@@ -301,15 +568,14 @@ class EmbeddingSpaceVisualiser(QWidget):
         spots = []
 
         for index, (
-            buffer,
+            record,
             coordinate,
         ) in enumerate(
             zip(
-                self.buffers,
+                self._records,
                 coordinates,
             )
         ):
-
             colour = colours[
                 min(
                     index,
@@ -318,21 +584,11 @@ class EmbeddingSpaceVisualiser(QWidget):
             ]
 
             is_current = (
-                id(buffer)
-                in self._current_buffer_ids
+                record["key"]
+                in self._current_keys
             )
 
-            #
-            # Current batch:
-            #
-            #     triangles
-            #
-            # History:
-            #
-            #     circles
-            #
             if is_current:
-
                 symbol = "t"
                 size = 17
 
@@ -340,9 +596,7 @@ class EmbeddingSpaceVisualiser(QWidget):
                     "w",
                     width=2,
                 )
-
             else:
-
                 symbol = "o"
                 size = 10
 
@@ -353,7 +607,7 @@ class EmbeddingSpaceVisualiser(QWidget):
             spots.append(
                 {
                     "pos": coordinate,
-                    "data": buffer,
+                    "data": record["data"],
                     "symbol": symbol,
                     "size": size,
                     "brush": pg.mkBrush(
@@ -373,170 +627,21 @@ class EmbeddingSpaceVisualiser(QWidget):
 
         self.plot.enableAutoRange()
 
-        # ==================================================
-        # Status
-        # ==================================================
-
         current_count = sum(
             1
-            for buffer
-            in self.buffers
-            if id(buffer)
-            in self._current_buffer_ids
+            for record
+            in self._records
+            if record["key"]
+            in self._current_keys
         )
 
         self.status.setText(
-            f"{point_count} embeddings"
-            f" | current: {current_count}"
+            f"{point_count} compatible embeddings"
+            f" | current pipeline chunks: {current_count}"
             f" | PC1 "
             f"{explained_variance[0] * 100:.1f}%"
             f" | PC2 "
             f"{explained_variance[1] * 100:.1f}%"
-        )
-
-    # ======================================================
-    # PCA
-    # ======================================================
-
-    @staticmethod
-    def _pca_2d(
-        matrix,
-    ):
-        """
-        PCA using NumPy SVD.
-
-        PCA is recalculated over all embeddings seen so far.
-        """
-
-        matrix = np.asarray(
-            matrix,
-            dtype=np.float64,
-        )
-
-        sample_count = (
-            matrix.shape[0]
-        )
-
-        # --------------------------------------------------
-        # Single embedding
-        # --------------------------------------------------
-
-        if sample_count == 1:
-
-            return (
-                np.zeros(
-                    (1, 2),
-                    dtype=np.float64,
-                ),
-                np.zeros(
-                    2,
-                    dtype=np.float64,
-                ),
-            )
-
-        # --------------------------------------------------
-        # Centre data
-        # --------------------------------------------------
-
-        centred = (
-            matrix
-            - matrix.mean(
-                axis=0,
-                keepdims=True,
-            )
-        )
-
-        # --------------------------------------------------
-        # PCA via SVD
-        # --------------------------------------------------
-
-        (
-            u,
-            singular_values,
-            _,
-        ) = np.linalg.svd(
-            centred,
-            full_matrices=False,
-        )
-
-        component_count = min(
-            2,
-            len(
-                singular_values
-            ),
-        )
-
-        coordinates = (
-            u[
-                :,
-                :component_count
-            ]
-            * singular_values[
-                :component_count
-            ]
-        )
-
-        # --------------------------------------------------
-        # Pad missing PC2 if necessary
-        # --------------------------------------------------
-
-        if component_count < 2:
-
-            coordinates = np.pad(
-                coordinates,
-                (
-                    (0, 0),
-                    (
-                        0,
-                        2
-                        - component_count,
-                    ),
-                ),
-            )
-
-        # --------------------------------------------------
-        # Explained variance
-        # --------------------------------------------------
-
-        variance = (
-            singular_values ** 2
-        )
-
-        total_variance = (
-            variance.sum()
-        )
-
-        if total_variance > 0:
-
-            explained_variance = (
-                variance
-                / total_variance
-            )
-
-        else:
-
-            explained_variance = (
-                np.zeros_like(
-                    variance
-                )
-            )
-
-        if len(explained_variance) < 2:
-
-            explained_variance = np.pad(
-                explained_variance,
-                (
-                    0,
-                    2
-                    - len(
-                        explained_variance
-                    ),
-                ),
-            )
-
-        return (
-            coordinates,
-            explained_variance[:2],
         )
 
     # ======================================================
@@ -545,17 +650,34 @@ class EmbeddingSpaceVisualiser(QWidget):
 
     def clear_history(
         self,
+        status_text="Waiting for embeddings...",
     ):
-        self.buffers.clear()
+        # Invalidate any PCA result already being calculated for the old
+        # recording/dataset.
+        self._pca_request_id += 1
 
+        self._records.clear()
+        self._record_index_by_key.clear()
         self.embedding_vectors.clear()
-
-        self._seen_buffers.clear()
-
-        self._current_buffer_ids.clear()
+        self._current_keys.clear()
 
         self.scatter.clear()
 
         self.status.setText(
-            "Waiting for embeddings..."
+            status_text
+        )
+
+    def shutdown(
+        self,
+    ):
+        self._pca_jobs.shutdown()
+
+    def closeEvent(
+        self,
+        event,
+    ):
+        self.shutdown()
+
+        super().closeEvent(
+            event
         )

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 
@@ -123,8 +124,12 @@ class EmbeddingCache:
             exist_ok=True,
         )
 
-        temporary_path = path.with_suffix(
-            ".tmp.npz"
+        temporary_path = (
+            path.parent
+            / (
+                f".{path.name}."
+                f"{uuid4().hex}.tmp.npz"
+            )
         )
 
         np.savez_compressed(

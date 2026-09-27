@@ -84,7 +84,7 @@ class SpeedometerLink(PipelineLink):
                 f"{current_rate:.2f} buffers/s "
                 f"(average {average_rate:.2f} buffers/s, "
                 f"total {self.total_buffers}), "
-                f"real-time speedup: {average_rate * audio.valid_samples}"
+                f"real-time speedup: {average_rate * audio.valid_samples/audio.sample_rate}"
             )
             self.interval_start_time = now
             

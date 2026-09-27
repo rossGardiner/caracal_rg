@@ -12,11 +12,10 @@
 # The final buffer may be shorter than the configured size and is emitted
 # without padding.
 
-import numpy as np
-
 from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
 from src.AudioReader import AudioReader
+from src.CanonicalChunkGrid import CanonicalChunkGrid
 from src.PipelineLink import PipelineLink
 
 
@@ -33,15 +32,16 @@ class AudioBufferLoader(PipelineLink):
 
     def __init__(
         self,
-        buffer_seconds: float = 5.0,
+        chunk_grid: CanonicalChunkGrid,
         is_caracal: bool = True,
     ):
         """
         Create an AudioBufferLoader.
 
         Args:
-            buffer_seconds:
-                Desired buffer length in seconds; must be > 0.
+            chunk_grid:
+                Shared canonical chunk grid used by both batch processing
+                and interactive browsing.
 
             is_caracal:
                 If True, attempt to use caracal.DataGetter where available.
@@ -49,15 +49,15 @@ class AudioBufferLoader(PipelineLink):
 
         super().__init__()
 
-        if buffer_seconds <= 0:
-            raise ValueError(
-                "buffer_seconds must be greater than zero"
+        if not isinstance(
+            chunk_grid,
+            CanonicalChunkGrid,
+        ):
+            raise TypeError(
+                "chunk_grid must be a CanonicalChunkGrid"
             )
 
-        self.buffer_seconds = float(
-            buffer_seconds
-        )
-        
+        self.chunk_grid = chunk_grid
         self.is_caracal = is_caracal
 
         self.reader = AudioReader(
@@ -75,8 +75,10 @@ class AudioBufferLoader(PipelineLink):
         Return configuration parameters affecting emitted AudioBuffers.
         """
 
+        # Keep the existing "buffer_seconds" key so this refactor does
+        # not change the pipeline hash or invalidate compatible caches.
         return {
-            "buffer_seconds": self.buffer_seconds,
+            "buffer_seconds": self.chunk_grid.chunk_duration_s,
             "is_caracal": self.is_caracal,
         }
 
@@ -156,7 +158,7 @@ class AudioBufferLoader(PipelineLink):
         buffer_samples = max(
             1,
             round(
-                self.buffer_seconds
+                self.chunk_grid.chunk_duration_s
                 * sample_rate
             ),
         )
@@ -186,29 +188,19 @@ class AudioBufferLoader(PipelineLink):
         # Canonical chunk index
         # ======================================================
 
-        chunk_position = (
-            packet.offset
-            / self.buffer_seconds
-        )
-
-        if not np.isclose(
-            chunk_position,
-            round(
-                chunk_position
-            ),
-        ):
+        try:
+            chunk_index = (
+                self.chunk_grid.aligned_chunk_index(
+                    packet.offset
+                )
+            )
+        except ValueError as exc:
             raise ValueError(
                 f"AudioPacket {packet.id} offset "
                 f"{packet.offset}s is not aligned to "
-                f"the {self.buffer_seconds}s "
-                f"canonical chunk grid"
-            )
-
-        chunk_index = int(
-            round(
-                chunk_position
-            )
-        )
+                f"the {self.chunk_grid.chunk_duration_s}s "
+                "canonical chunk grid"
+            ) from exc
 
         # ======================================================
         # Number of samples requested by this packet

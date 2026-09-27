@@ -44,6 +44,25 @@ class Resampler(PipelineLink):
         }
 
     def next_audio(self, audio: AudioBuffer) -> None:
+        resampled_buffer = self.process(
+            audio
+        )
+
+        if self.callback is not None:
+            self.callback.next_audio(
+                resampled_buffer
+            )
+
+    def process(
+        self,
+        audio: AudioBuffer,
+    ) -> AudioBuffer:
+        """Resample one AudioBuffer and return the processed buffer.
+
+        next_audio() delegates to this method so batch processing and
+        interactive processing share exactly the same resampling code.
+        """
+
         if not isinstance(audio, AudioBuffer):
             raise TypeError(
                 "Resampler expects an AudioBuffer"
@@ -71,10 +90,7 @@ class Resampler(PipelineLink):
             )
 
         if audio.sample_rate == self.target_sample_rate:
-            if self.callback is not None:
-                self.callback.next_audio(audio)
-
-            return
+            return audio
 
         resampled_waveform = librosa.resample(
             y=waveform,
@@ -86,7 +102,7 @@ class Resampler(PipelineLink):
             copy=False,
         )
 
-        resampled_buffer = replace(
+        return replace(
             audio,
             waveform=resampled_waveform,
             sample_rate=self.target_sample_rate,
@@ -100,11 +116,6 @@ class Resampler(PipelineLink):
                 audio.sample_rate,
             ),
         )
-
-        if self.callback is not None:
-            self.callback.next_audio(
-                resampled_buffer
-            )
 
     def _convert_sample_count(
         self,
