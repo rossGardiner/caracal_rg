@@ -10,12 +10,13 @@ from src.CaracalStreamer import CaracalStreamer
 from src.ControlWindow import ControlWindow
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.EmbeddingsCreator import EmbeddingsCreator
+from src.MainWindow import MainWindow
 from src.PipelineDefinitions import build_embedding_pipeline
 from src.QtSignalHandler import QtSignalHandler
 
 
 def main():
-    """Open the explorer without starting full-dataset precomputation."""
+    """Open the tabbed application without starting dataset precomputation."""
 
     pipeline = build_embedding_pipeline()
 
@@ -47,13 +48,17 @@ def main():
         is_caracal=True
     )
 
-    window = ControlWindow(
+    explorer_view = ControlWindow(
         audio_packet_source=source,
         audio_reader=audio_reader,
         chunk_grid=loader.chunk_grid,
         embedding_cache=cache_loader.cache,
         pipeline=pipeline,
         embedding_name=embeddings_creator.embedding_name,
+    )
+
+    window = MainWindow(
+        explorer_view=explorer_view,
     )
 
     print(

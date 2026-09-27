@@ -61,6 +61,8 @@ class ControlWindow(QMainWindow):
     ):
         super().__init__()
 
+        self._is_shutdown = False
+
         # ==================================================
         # Processed pipeline state
         # ==================================================
@@ -1386,10 +1388,16 @@ class ControlWindow(QMainWindow):
     # Cleanup
     # ======================================================
 
-    def closeEvent(
+    def shutdown(
         self,
-        event,
     ):
+        """Release explorer playback and background resources once."""
+
+        if self._is_shutdown:
+            return
+
+        self._is_shutdown = True
+
         self.stop_audio()
 
         self.browsing_audio_jobs.shutdown()
@@ -1398,6 +1406,12 @@ class ControlWindow(QMainWindow):
         self.embedding_cache_jobs.shutdown()
         self.embedding_request_jobs.shutdown()
         self.processed_view.shutdown()
+
+    def closeEvent(
+        self,
+        event,
+    ):
+        self.shutdown()
 
         super().closeEvent(
             event
