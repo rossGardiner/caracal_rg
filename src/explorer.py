@@ -12,7 +12,10 @@ from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
 from src.PipelineController import PipelineController
-from src.PipelineDefinitions import build_embedding_pipeline
+from src.PipelineDefinitions import (
+    build_embedding_pipeline,
+    get_pipeline_definitions,
+)
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel
 from src.PipelineView import PipelineView
@@ -61,12 +64,13 @@ def main():
         embedding_name=embeddings_creator.embedding_name,
     )
 
-    pipeline_builders = {
-        "Default embedding pipeline": build_embedding_pipeline,
-    }
+    pipeline_definitions = get_pipeline_definitions()
 
     pipeline_run_model = PipelineRunModel(
-        available_pipelines=tuple(pipeline_builders),
+        available_pipelines=tuple(
+            definition.name
+            for definition in pipeline_definitions
+        ),
     )
     pipeline_view = PipelineView()
     pipeline_runner = PipelineRunner()
@@ -74,7 +78,7 @@ def main():
         model=pipeline_run_model,
         view=pipeline_view,
         runner=pipeline_runner,
-        pipeline_builders=pipeline_builders,
+        pipeline_definitions=pipeline_definitions,
     )
 
     window = MainWindow(

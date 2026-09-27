@@ -53,6 +53,28 @@ class PipelineView(QWidget):
         controls.addStretch(1)
 
         self.status_value = QLabel()
+        self.description_value = QLabel()
+        self.description_value.setWordWrap(True)
+        self.stages_value = QLabel()
+        self.stages_value.setWordWrap(True)
+        self.pipeline_hash_value = QLabel()
+        self.pipeline_hash_value.setWordWrap(True)
+
+        definition_group = QGroupBox("Pipeline definition")
+        definition_layout = QFormLayout(definition_group)
+        definition_layout.addRow(
+            "Description:",
+            self.description_value,
+        )
+        definition_layout.addRow(
+            "Stages:",
+            self.stages_value,
+        )
+        definition_layout.addRow(
+            "Pipeline hash:",
+            self.pipeline_hash_value,
+        )
+
         self.chunks_value = QLabel()
         self.audio_seconds_value = QLabel()
         self.elapsed_value = QLabel()
@@ -96,6 +118,7 @@ class PipelineView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(selection_layout)
+        layout.addWidget(definition_group)
         layout.addLayout(controls)
         layout.addWidget(benchmark_group)
         layout.addWidget(self.error_value)
@@ -124,9 +147,20 @@ class PipelineView(QWidget):
             model.selected_pipeline
         )
         self.pipeline_selector.blockSignals(False)
+
         self.status_value.setText(
             model.status.value
         )
+        self.description_value.setText(
+            model.pipeline_description
+        )
+        self.stages_value.setText(
+            "\n↓\n".join(model.pipeline_stages)
+        )
+        self.pipeline_hash_value.setText(
+            model.pipeline_hash or "Calculated when the pipeline is started"
+        )
+
         self.chunks_value.setText(
             str(model.chunks_processed)
         )

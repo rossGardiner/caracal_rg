@@ -9,6 +9,7 @@ from src.EmbeddingCacheSaver import EmbeddingCacheSaver
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.HighPassFilter import HighPassFilter
 from src.Pipeline import Pipeline
+from src.PipelineDefinition import PipelineDefinition
 from src.Resampler import Resampler
 from src.SpeedometerLink import SpeedometerLink
 
@@ -81,4 +82,33 @@ def build_embedding_pipeline(
             embeddings_creator,
             cache_saver,
         ]
+    )
+
+
+DEFAULT_EMBEDDING_PIPELINE = PipelineDefinition(
+    name="Default embedding pipeline",
+    description=(
+        "Canonical CARACAL audio-to-Perch embedding pipeline. "
+        "Compatible cached embeddings are identified by the runtime "
+        "pipeline's existing configuration hash."
+    ),
+    stage_names=(
+        "CARACAL audio source",
+        "Canonical chunk loader",
+        "High-pass filter",
+        "Speedometer",
+        "Resampler",
+        "Embedding cache lookup",
+        "Perch v2 embeddings",
+        "Embedding cache save",
+    ),
+    builder=build_embedding_pipeline,
+)
+
+
+def get_pipeline_definitions() -> tuple[PipelineDefinition, ...]:
+    """Return the pipelines currently offered by the application."""
+
+    return (
+        DEFAULT_EMBEDDING_PIPELINE,
     )

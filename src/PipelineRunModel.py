@@ -24,10 +24,13 @@ class PipelineRunStatus(Enum):
 
 @dataclass
 class PipelineRunModel:
-    """Current selection, lifecycle state, and live benchmark values."""
+    """Current selection, definition metadata, and live run state."""
 
     available_pipelines: tuple[str, ...]
     selected_pipeline: str | None = None
+    pipeline_description: str = ""
+    pipeline_stages: tuple[str, ...] = ()
+    pipeline_hash: str | None = None
     status: PipelineRunStatus = PipelineRunStatus.IDLE
     chunks_processed: int = 0
     audio_seconds_processed: float = 0.0

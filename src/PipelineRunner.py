@@ -100,12 +100,15 @@ class PipelineRunner(QObject):
     at the next completed pipeline item rather than interrupting processing in
     the middle of a callback.
 
-    ``progress`` reports cumulative live benchmark values in this order:
+    ``prepared`` reports the instantiated pipeline's existing configuration
+    hash before runtime-only links are appended. ``progress`` reports
+    cumulative live benchmark values in this order:
     chunks, audio seconds, active elapsed seconds, chunks/second, realtime
     factor. Active elapsed time excludes time actually spent paused at the run
     gate.
     """
 
+    prepared = Signal(str)
     started = Signal()
     progress = Signal(int, float, float, float, float)
     finished = Signal()
@@ -214,6 +217,7 @@ class PipelineRunner(QObject):
                 )
 
             original_hash = pipeline.get_config_hash()
+            self.prepared.emit(original_hash)
 
             benchmark = _PipelineBenchmarkLink(
                 on_completed=self._record_completed_item,

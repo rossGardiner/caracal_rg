@@ -1,10 +1,8 @@
 """Controller for the pipeline-management tab."""
 
-from collections.abc import Callable
-
 from PySide6.QtCore import QObject, Slot
 
-from src.Pipeline import Pipeline
+from src.PipelineDefinition import PipelineDefinition
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel, PipelineRunStatus
 from src.PipelineView import PipelineView
@@ -18,7 +16,7 @@ class PipelineController(QObject):
         model: PipelineRunModel,
         view: PipelineView,
         runner: PipelineRunner,
-        pipeline_builders: dict[str, Callable[[], Pipeline]],
+        pipeline_definitions: tuple[PipelineDefinition, ...],
         parent=None,
     ):
         super().__init__(parent)
@@ -26,11 +24,17 @@ class PipelineController(QObject):
         self.model = model
         self.view = view
         self.runner = runner
-        self.pipeline_builders = dict(pipeline_builders)
+        self.pipeline_definitions = {
+            definition.name: definition
+            for definition in pipeline_definitions
+        }
 
-        if set(self.pipeline_builders) != set(model.available_pipelines):
+        if len(self.pipeline_definitions) != len(pipeline_definitions):
+            raise ValueError("Pipeline definition names must be unique")
+
+        if set(self.pipeline_definitions) != set(model.available_pipelines):
             raise ValueError(
-                "Pipeline builders must match the model's available pipelines"
+                "Pipeline definitions must match the model's available pipelines"
             )
 
         self.view.pipeline_selected.connect(self.select_pipeline)
@@ -39,12 +43,14 @@ class PipelineController(QObject):
         self.view.resume_requested.connect(self.resume)
         self.view.stop_requested.connect(self.stop)
 
+        self.runner.prepared.connect(self._on_prepared)
         self.runner.started.connect(self._on_started)
         self.runner.progress.connect(self._on_progress)
         self.runner.finished.connect(self._on_finished)
         self.runner.stopped.connect(self._on_stopped)
         self.runner.failed.connect(self._on_failed)
 
+        self._apply_selected_definition()
         self.view.set_pipeline_names(
             model.available_pipelines,
             model.selected_pipeline,
@@ -59,6 +65,7 @@ class PipelineController(QObject):
             return
 
         self.model.select_pipeline(name)
+        self._apply_selected_definition()
         self.refresh_view()
 
     @Slot()
@@ -72,9 +79,9 @@ class PipelineController(QObject):
         self.model.status = PipelineRunStatus.STARTING
         self.refresh_view()
 
-        builder = self.pipeline_builders[self.model.selected_pipeline]
+        definition = self._selected_definition()
 
-        if not self.runner.start(builder):
+        if not self.runner.start(definition.build):
             self.model.status = PipelineRunStatus.FAILED
             self.model.error = "A pipeline is already running"
             self.refresh_view()
@@ -122,6 +129,11 @@ class PipelineController(QObject):
     def refresh_view(self):
         self.view.render(self.model)
 
+    @Slot(str)
+    def _on_prepared(self, pipeline_hash: str):
+        self.model.pipeline_hash = pipeline_hash
+        self.refresh_view()
+
     @Slot()
     def _on_started(self):
         if self.model.status is PipelineRunStatus.STARTING:
@@ -160,6 +172,15 @@ class PipelineController(QObject):
         self.model.error = message
         self.refresh_view()
 
+    def _selected_definition(self) -> PipelineDefinition:
+        return self.pipeline_definitions[self.model.selected_pipeline]
+
+    def _apply_selected_definition(self):
+        definition = self._selected_definition()
+        self.model.pipeline_description = definition.description
+        self.model.pipeline_stages = definition.stage_names
+        self.model.pipeline_hash = None
+
     def _run_is_active(self):
         return self.model.status in {
             PipelineRunStatus.STARTING,
@@ -169,6 +190,7 @@ class PipelineController(QObject):
         }
 
     def _reset_run_state(self):
+        self.model.pipeline_hash = None
         self.model.chunks_processed = 0
         self.model.audio_seconds_processed = 0.0
         self.model.elapsed_seconds = 0.0
