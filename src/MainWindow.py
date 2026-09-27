@@ -14,12 +14,13 @@ from src.PipelineView import PipelineView
 
 
 class MainWindow(QMainWindow):
-    """Application shell containing Explorer and Pipelines tabs."""
+    """Application shell containing Explorer, Pipelines, and Terminal tabs."""
 
     def __init__(
         self,
         explorer_view: QWidget,
         pipeline_view: QWidget | None = None,
+        terminal_view: QWidget | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -37,8 +38,17 @@ class MainWindow(QMainWindow):
                 "pipeline_view must be a QWidget"
             )
 
+        if (
+            terminal_view is not None
+            and not isinstance(terminal_view, QWidget)
+        ):
+            raise TypeError(
+                "terminal_view must be a QWidget or None"
+            )
+
         self.explorer_view = explorer_view
         self.pipeline_view = pipeline_view
+        self.terminal_view = terminal_view
 
         self.tabs = QTabWidget()
         self.tabs.addTab(
@@ -49,6 +59,12 @@ class MainWindow(QMainWindow):
             self.pipeline_view,
             "Pipelines",
         )
+
+        if self.terminal_view is not None:
+            self.tabs.addTab(
+                self.terminal_view,
+                "Terminal",
+            )
 
         self.setCentralWidget(
             self.tabs

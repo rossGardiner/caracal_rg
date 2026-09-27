@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from src.AudioBufferLoader import AudioBufferLoader
 from src.AudioReader import AudioReader
 from src.CaracalStreamer import CaracalStreamer
+from src.ExplorerController import ExplorerController
 from src.ExplorerView import ExplorerView
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.ExplorerModel import ExplorerModel
@@ -21,10 +22,18 @@ from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel
 from src.PipelineView import PipelineView
 from src.QtSignalHandler import QtSignalHandler
+from src.TerminalView import TerminalView
 
 
 def main():
     """Open the tabbed application without starting dataset precomputation."""
+
+    app = QApplication(
+        sys.argv
+    )
+
+    terminal_view = TerminalView()
+    terminal_view.start_capture()
 
     pipeline = build_embedding_pipeline()
 
@@ -39,10 +48,6 @@ def main():
     )
     embeddings_creator = pipeline.get_link(
         EmbeddingsCreator
-    )
-
-    app = QApplication(
-        sys.argv
     )
     signal_handler = QtSignalHandler(
         app
@@ -68,6 +73,14 @@ def main():
     explorer_view = ExplorerView(
         model=explorer_model,
     )
+    explorer_controller = ExplorerController(
+        model=explorer_model,
+        view=explorer_view,
+        parent=explorer_view,
+    )
+    explorer_controller.initialize(
+        packet_index=explorer_view.initial_packet_index()
+    )
 
     pipeline_definitions = get_pipeline_definitions()
 
@@ -89,18 +102,27 @@ def main():
     window = MainWindow(
         explorer_view=explorer_view,
         pipeline_view=pipeline_view,
+        terminal_view=terminal_view,
     )
 
     app.aboutToQuit.connect(
+        explorer_controller.shutdown
+    )
+    app.aboutToQuit.connect(
         pipeline_controller.shutdown
+    )
+    app.aboutToQuit.connect(
+        terminal_view.shutdown
     )
 
     # Keep the MVC objects alive for the duration of the Qt event loop.
     application_objects = (
         explorer_model,
+        explorer_controller,
         pipeline_run_model,
         pipeline_runner,
         pipeline_controller,
+        terminal_view,
     )
     _ = application_objects
 

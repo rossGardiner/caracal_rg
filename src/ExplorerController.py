@@ -9,7 +9,7 @@ from src.SpectrogramData import calculate_spectrogram
 
 
 class ExplorerController(QObject):
-    """Coordinate interactive explorer work between model and views.
+    """Coordinate interactive explorer work between model and view.
 
     The controller owns asynchronous job policy and stale-result protection.
     It deliberately does not own Qt window layout or audio-device playback.
@@ -22,8 +22,7 @@ class ExplorerController(QObject):
     def __init__(
         self,
         model: ExplorerModel,
-        browsing_view,
-        processed_view,
+        view,
         parent=None,
     ):
         super().__init__(parent)
@@ -32,8 +31,30 @@ class ExplorerController(QObject):
             raise TypeError("model must be an ExplorerModel")
 
         self.model = model
-        self.browsing_view = browsing_view
-        self.processed_view = processed_view
+        self.view = view
+
+        self.view.recording_selected.connect(
+            self.recording_selected
+        )
+        self.view.chunk_selected.connect(
+            self.chunk_selected
+        )
+        self.view.processed_buffer_selected.connect(
+            self.processed_buffer_selected
+        )
+        self.view.processed_buffers_received.connect(
+            self.update_processed_buffers
+        )
+
+        self.status_changed.connect(
+            self.view.show_status
+        )
+        self.stop_browsing_playback_requested.connect(
+            self.view.stop_browsing_audio
+        )
+        self.stop_processed_playback_requested.connect(
+            self.view.stop_processed_audio
+        )
 
         self._is_shutdown = False
 
@@ -105,10 +126,10 @@ class ExplorerController(QObject):
     def initialize(self, packet_index=None):
         """Initialise the explorer selection without doing work in a constructor."""
 
-        self.browsing_view.set_browsing_controls_enabled(False)
+        self.view.set_browsing_controls_enabled(False)
 
         if packet_index is None:
-            self.browsing_view.set_no_recordings()
+            self.view.set_no_recordings()
             return
 
         self.recording_selected(packet_index)
@@ -138,7 +159,7 @@ class ExplorerController(QObject):
             if buffer.recording_id == selected_recording_id
         ]
 
-        self.processed_view.add_buffers(
+        self.view.add_processed_buffers(
             matching_buffers
         )
 
@@ -154,7 +175,7 @@ class ExplorerController(QObject):
         """Select a processed buffer and calculate its spectrogram off-thread."""
 
         if not self.model.processed_buffers:
-            self.processed_view.clear_processed_audio()
+            self.view.clear_processed_audio()
             return
 
         if not (
@@ -169,13 +190,13 @@ class ExplorerController(QObject):
         self.model.current_processed_buffer_index = buffer_index
         audio_buffer = self.model.current_processed_buffer
 
-        self.processed_view.set_buffer_selection(
+        self.view.set_processed_buffer_selection(
             index=buffer_index,
             buffer_count=len(self.model.processed_buffers),
             audio_buffer=audio_buffer,
         )
 
-        self.processed_view.clear_spectrogram()
+        self.view.clear_processed_spectrogram()
 
         self._processed_spectrogram_request_id += 1
         request_id = self._processed_spectrogram_request_id
@@ -194,7 +215,7 @@ class ExplorerController(QObject):
         if request_id != self._processed_spectrogram_request_id:
             return
 
-        self.processed_view.set_spectrogram_result(
+        self.view.set_processed_spectrogram_result(
             result
         )
 
@@ -203,7 +224,7 @@ class ExplorerController(QObject):
         if request_id != self._processed_spectrogram_request_id:
             return
 
-        self.processed_view.clear_spectrogram()
+        self.view.clear_processed_spectrogram()
         self.status_changed.emit(
             "Could not calculate processed spectrogram: "
             f"{message}"
@@ -230,7 +251,7 @@ class ExplorerController(QObject):
         self.model.current_chunk_index = 0
         self.model.interactive_embeddings_by_key.clear()
 
-        self.processed_view.set_selected_embedding_status(
+        self.view.set_selected_embedding_status(
             "Selected chunk embedding: waiting for source audio..."
         )
 
@@ -250,7 +271,7 @@ class ExplorerController(QObject):
                 "Selected AudioPacket has no canonical chunks"
             )
 
-        self.browsing_view.set_chunk_range(
+        self.view.set_chunk_range(
             self.model.current_num_chunks
         )
 
@@ -263,6 +284,7 @@ class ExplorerController(QObject):
         self.model.current_chunk_index = 0
         self.model.current_num_chunks = 0
         self.model.browsing_buffers = []
+        self._clear_processed_audio()
 
         # Invalidate any result still running for the previous selection.
         self._browsing_request_id += 1
@@ -270,23 +292,23 @@ class ExplorerController(QObject):
         self._interactive_embedding_request_id += 1
         self.model.interactive_embeddings_by_key.clear()
 
-        self.processed_view.clear_recording_embeddings(
+        self.view.clear_recording_embeddings(
             "No recording selected"
         )
-        self.processed_view.set_selected_embedding_status(
+        self.view.set_selected_embedding_status(
             "Selected chunk embedding: no recording selected"
         )
 
-        self.browsing_view.set_browsing_controls_enabled(
+        self.view.set_browsing_controls_enabled(
             False
         )
-        self.browsing_view.set_chunk_range(
+        self.view.set_chunk_range(
             0
         )
-        self.browsing_view.set_chunk_label(
+        self.view.set_chunk_label(
             "No recording selected"
         )
-        self.browsing_view.clear_spectrogram()
+        self.view.clear_browsing_spectrogram()
 
     @Slot(int)
     def chunk_selected(self, chunk_index: int):
@@ -303,9 +325,10 @@ class ExplorerController(QObject):
             return
 
         self.stop_browsing_playback_requested.emit()
+        self._clear_processed_audio()
 
         self.model.browsing_buffers = []
-        self.browsing_view.clear_spectrogram()
+        self.view.clear_browsing_spectrogram()
 
         start_s, end_s = self.model.chunk_grid.chunk_bounds(
             self.model.current_chunk_index,
@@ -316,12 +339,12 @@ class ExplorerController(QObject):
         self._interactive_embedding_request_id += 1
         request_id = self._browsing_request_id
 
-        self.processed_view.set_selected_embedding_status(
+        self.view.set_selected_embedding_status(
             f"Selected chunk embedding: waiting for chunk "
             f"{self.model.current_chunk_index} audio..."
         )
 
-        self.browsing_view.set_browsing_controls_enabled(
+        self.view.set_browsing_controls_enabled(
             False
         )
 
@@ -342,10 +365,10 @@ class ExplorerController(QObject):
 
     def _update_chunk_label(self):
         if self.model.current_audio_packet is None:
-            self.browsing_view.set_chunk_label(
+            self.view.set_chunk_label(
                 "No recording selected"
             )
-            self.browsing_view.clear_spectrogram()
+            self.view.clear_browsing_spectrogram()
             return
 
         start_s, end_s = self.model.chunk_grid.chunk_bounds(
@@ -353,7 +376,7 @@ class ExplorerController(QObject):
             total_duration_s=self.model.current_audio_packet.duration,
         )
 
-        self.browsing_view.set_chunk_label(
+        self.view.set_chunk_label(
             f"{self.model.current_chunk_index} "
             f"({start_s:.1f}s - {end_s:.1f}s)"
         )
@@ -369,12 +392,12 @@ class ExplorerController(QObject):
         request_id = self._embedding_cache_request_id
 
         if recording_id is None:
-            self.processed_view.clear_recording_embeddings(
+            self.view.clear_recording_embeddings(
                 "Selected recording has no recording_id"
             )
             return
 
-        self.processed_view.clear_recording_embeddings(
+        self.view.clear_recording_embeddings(
             f"Loading cached {self.model.embedding_name!r} embeddings..."
         )
 
@@ -393,12 +416,12 @@ class ExplorerController(QObject):
         if request_id != self._embedding_cache_request_id:
             return
 
-        self.processed_view.set_recording_embeddings(
+        self.view.set_recording_embeddings(
             embeddings
         )
 
         if self.model.interactive_embeddings_by_key:
-            self.processed_view.add_embeddings(
+            self.view.add_embeddings(
                 self.model.interactive_embeddings_by_key.values()
             )
 
@@ -410,7 +433,7 @@ class ExplorerController(QObject):
         ]
 
         if matching_buffers:
-            self.processed_view.add_buffers(
+            self.view.add_processed_buffers(
                 matching_buffers
             )
 
@@ -419,7 +442,7 @@ class ExplorerController(QObject):
         if request_id != self._embedding_cache_request_id:
             return
 
-        self.processed_view.clear_recording_embeddings(
+        self.view.clear_recording_embeddings(
             "Could not load cached embeddings"
         )
         self.status_changed.emit(
@@ -427,38 +450,71 @@ class ExplorerController(QObject):
         )
 
     @Slot(int, object)
-    def _interactive_embedding_ready(self, request_id: int, embedding):
+    def _interactive_embedding_ready(
+        self,
+        request_id: int,
+        processed_buffer,
+    ):
         if request_id != self._interactive_embedding_request_id:
             return
 
-        recording_id = embedding.get(
-            "recording_id"
-        )
-
-        if recording_id != self.model.selected_recording_id:
+        if processed_buffer.recording_id != self.model.selected_recording_id:
             return
 
-        chunk_index = embedding.get(
-            "chunk_index"
+        if processed_buffer.chunk_index != self.model.current_chunk_index:
+            return
+
+        embedding = processed_buffer.embeddings.get(
+            self.model.embedding_name
         )
+        if embedding is None:
+            self._interactive_embedding_failed(
+                request_id,
+                f"Processed buffer has no {self.model.embedding_name!r} embedding",
+            )
+            return
+
+        embedding_record = {
+            "recording_id": processed_buffer.recording_id,
+            "chunk_index": processed_buffer.chunk_index,
+            "values": embedding["values"],
+            "pipeline_hash": embedding["pipeline_hash"],
+            "embedding_name": self.model.embedding_name,
+            "metadata": embedding.get("metadata", {}),
+            "loaded_from_cache": bool(
+                embedding.get("loaded_from_cache", False)
+            ),
+        }
 
         key = (
-            str(recording_id),
-            int(chunk_index),
+            str(processed_buffer.recording_id),
+            int(processed_buffer.chunk_index),
         )
-        self.model.interactive_embeddings_by_key[key] = embedding
+        self.model.interactive_embeddings_by_key[key] = embedding_record
 
-        self.processed_view.add_embeddings(
-            [embedding]
+        self.view.add_embeddings(
+            [embedding_record]
         )
 
-        if embedding.get("loaded_from_cache", False):
+        # The interactive request has now produced the exact processed audio
+        # representation for the selected canonical chunk.  Make that the
+        # processed pane's current buffer and calculate its spectrogram using
+        # the same existing processed-audio path used by observed pipelines.
+        self.stop_processed_playback_requested.emit()
+        self.model.processed_buffers = [
+            processed_buffer
+        ]
+        self.model.current_processed_buffer_index = 0
+        self.processed_buffer_selected(0)
+        self._update_pipeline_status()
+
+        if embedding_record.get("loaded_from_cache", False):
             source_text = "loaded from cache"
         else:
             source_text = "computed and cached"
 
-        self.processed_view.set_selected_embedding_status(
-            f"Selected chunk embedding: chunk {chunk_index} "
+        self.view.set_selected_embedding_status(
+            f"Selected chunk embedding: chunk {processed_buffer.chunk_index} "
             f"{source_text}"
         )
 
@@ -467,7 +523,7 @@ class ExplorerController(QObject):
         if request_id != self._interactive_embedding_request_id:
             return
 
-        self.processed_view.set_selected_embedding_status(
+        self.view.set_selected_embedding_status(
             "Selected chunk embedding failed: "
             f"{message}"
         )
@@ -485,7 +541,7 @@ class ExplorerController(QObject):
             audio_buffer
         ]
 
-        self.browsing_view.set_browsing_controls_enabled(
+        self.view.set_browsing_controls_enabled(
             True
         )
 
@@ -505,7 +561,7 @@ class ExplorerController(QObject):
 
         embedding_request_id = self._interactive_embedding_request_id
 
-        self.processed_view.set_selected_embedding_status(
+        self.view.set_selected_embedding_status(
             f"Selected chunk embedding: checking chunk "
             f"{audio_buffer.chunk_index}..."
         )
@@ -523,7 +579,7 @@ class ExplorerController(QObject):
         if request_id != self._browsing_request_id:
             return
 
-        self.browsing_view.set_spectrogram_result(
+        self.view.set_browsing_spectrogram_result(
             result
         )
         self.status_changed.emit(
@@ -535,7 +591,7 @@ class ExplorerController(QObject):
         if request_id != self._browsing_request_id:
             return
 
-        self.browsing_view.clear_spectrogram()
+        self.view.clear_browsing_spectrogram()
         self.status_changed.emit(
             f"Audio loaded, but spectrogram failed: {message}"
         )
@@ -546,16 +602,29 @@ class ExplorerController(QObject):
             return
 
         self.model.browsing_buffers = []
-        self.browsing_view.clear_spectrogram()
-        self.browsing_view.set_browsing_controls_enabled(
+        self._clear_processed_audio()
+        self.view.clear_browsing_spectrogram()
+        self.view.set_browsing_controls_enabled(
             False
         )
-        self.processed_view.set_selected_embedding_status(
+        self.view.set_selected_embedding_status(
             "Selected chunk embedding: source audio unavailable"
         )
         self.status_changed.emit(
             f"Could not load chunk: {message}"
         )
+
+    def _clear_processed_audio(self):
+        """Clear processed audio and invalidate any outstanding spectrogram."""
+
+        self.stop_processed_playback_requested.emit()
+        self.model.processed_buffers = []
+        self.model.current_processed_buffer_index = 0
+
+        self._processed_spectrogram_request_id += 1
+
+        self.view.clear_processed_audio()
+        self._update_pipeline_status()
 
     # ======================================================
     # Processed status
@@ -563,7 +632,7 @@ class ExplorerController(QObject):
 
     def _update_pipeline_status(self):
         if not self.model.processed_buffers:
-            self.processed_view.set_status(
+            self.view.set_processed_status(
                 "Waiting for processed audio..."
             )
             return
@@ -583,10 +652,21 @@ class ExplorerController(QObject):
         )
         duration = total_samples / sample_rate
 
-        total_embeddings = self.processed_view.embedding_count()
+        total_embeddings = self.view.embedding_count()
 
-        self.processed_view.set_status(
-            f"Latest batch: {len(self.model.processed_buffers)} processed buffer(s)"
+        if len(self.model.processed_buffers) == 1:
+            buffer = self.model.processed_buffers[0]
+            if buffer.chunk_index is None:
+                source_text = "Processed selection"
+            else:
+                source_text = f"Processed chunk {buffer.chunk_index}"
+        else:
+            source_text = (
+                f"Observed batch: {len(self.model.processed_buffers)} buffers"
+            )
+
+        self.view.set_processed_status(
+            f"{source_text}"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
             f" | {channel_count} channel(s)"

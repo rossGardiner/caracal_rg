@@ -1,6 +1,7 @@
 import numpy as np
 
 from PySide6.QtCore import (
+    Signal,
     Slot,
     QByteArray,
     QBuffer,
@@ -21,7 +22,6 @@ from PySide6.QtMultimedia import (
 )
 
 from src.BrowsingView import BrowsingView
-from src.ExplorerController import ExplorerController
 from src.ExplorerModel import ExplorerModel
 from src.ProcessedView import ProcessedView
 
@@ -35,6 +35,11 @@ class ExplorerView(QMainWindow):
     so the application shell can host it directly while retaining native Qt
     dock-widget behaviour.
     """
+
+    recording_selected = Signal(int)
+    chunk_selected = Signal(int)
+    processed_buffer_selected = Signal(int)
+    processed_buffers_received = Signal(object)
 
     def __init__(
         self,
@@ -85,18 +90,11 @@ class ExplorerView(QMainWindow):
             embedding_name=self.model.embedding_name,
         )
 
-        self.controller = ExplorerController(
-            model=self.model,
-            browsing_view=self.browsing_view,
-            processed_view=self.processed_view,
-            parent=self,
-        )
-
         self.browsing_view.recording_selected.connect(
             self._recording_selected
         )
         self.browsing_view.chunk_selected.connect(
-            self.controller.chunk_selected
+            self.chunk_selected.emit
         )
         self.browsing_view.play_requested.connect(
             self.play_audio
@@ -106,22 +104,12 @@ class ExplorerView(QMainWindow):
         )
 
         self.processed_view.buffer_selected.connect(
-            self.controller.processed_buffer_selected
+            self.processed_buffer_selected.emit
         )
         self.processed_view.play_requested.connect(
             self.play_processed_audio
         )
         self.processed_view.stop_requested.connect(
-            self.stop_processed_audio
-        )
-
-        self.controller.status_changed.connect(
-            self.status_bar.showMessage
-        )
-        self.controller.stop_browsing_playback_requested.connect(
-            self.stop_browsing_audio
-        )
-        self.controller.stop_processed_playback_requested.connect(
             self.stop_processed_audio
         )
 
@@ -164,16 +152,6 @@ class ExplorerView(QMainWindow):
         # ==================================================
         # Initial state
         # ==================================================
-
-        if self.model.audio_packets:
-            packet_index = self.browsing_view.recording_packet_index(
-                0
-            )
-            self.controller.initialize(
-                packet_index=packet_index
-            )
-        else:
-            self.controller.initialize()
 
         self.status_bar.showMessage(
             "Ready"
@@ -218,7 +196,7 @@ class ExplorerView(QMainWindow):
     ):
         """Forward an optional GuiPipelineLink batch to the controller."""
 
-        self.controller.update_processed_buffers(
+        self.processed_buffers_received.emit(
             buffers
         )
 
@@ -239,8 +217,109 @@ class ExplorerView(QMainWindow):
             if packet_index is None:
                 packet_index = -1
 
-        self.controller.recording_selected(
+        self.recording_selected.emit(
             int(packet_index)
+        )
+
+    def initial_packet_index(self):
+        """Return the model packet index represented by the first selector row."""
+
+        if not self.model.audio_packets:
+            return None
+
+        return self.browsing_view.recording_packet_index(
+            0
+        )
+
+    # ======================================================
+    # Controller-facing render interface
+    # ======================================================
+
+    def show_status(self, message: str):
+        self.status_bar.showMessage(
+            message
+        )
+
+    def set_browsing_controls_enabled(self, enabled: bool):
+        self.browsing_view.set_browsing_controls_enabled(
+            enabled
+        )
+
+    def set_no_recordings(self):
+        self.browsing_view.set_no_recordings()
+
+    def set_chunk_range(self, chunk_count: int):
+        self.browsing_view.set_chunk_range(
+            chunk_count
+        )
+
+    def set_chunk_label(self, text: str):
+        self.browsing_view.set_chunk_label(
+            text
+        )
+
+    def set_browsing_spectrogram_result(self, result):
+        self.browsing_view.set_spectrogram_result(
+            result
+        )
+
+    def clear_browsing_spectrogram(self):
+        self.browsing_view.clear_spectrogram()
+
+    def set_processed_buffer_selection(
+        self,
+        index: int,
+        buffer_count: int,
+        audio_buffer,
+    ):
+        self.processed_view.set_buffer_selection(
+            index=index,
+            buffer_count=buffer_count,
+            audio_buffer=audio_buffer,
+        )
+
+    def set_processed_spectrogram_result(self, result):
+        self.processed_view.set_spectrogram_result(
+            result
+        )
+
+    def clear_processed_spectrogram(self):
+        self.processed_view.clear_spectrogram()
+
+    def clear_processed_audio(self):
+        self.processed_view.clear_processed_audio()
+
+    def set_recording_embeddings(self, embeddings):
+        self.processed_view.set_recording_embeddings(
+            embeddings
+        )
+
+    def clear_recording_embeddings(self, message: str):
+        self.processed_view.clear_recording_embeddings(
+            message
+        )
+
+    def add_embeddings(self, embeddings):
+        self.processed_view.add_embeddings(
+            embeddings
+        )
+
+    def set_selected_embedding_status(self, message: str):
+        self.processed_view.set_selected_embedding_status(
+            message
+        )
+
+    def embedding_count(self) -> int:
+        return self.processed_view.embedding_count()
+
+    def add_processed_buffers(self, buffers):
+        self.processed_view.add_buffers(
+            buffers
+        )
+
+    def set_processed_status(self, message: str):
+        self.processed_view.set_status(
+            message
         )
 
     # ======================================================
@@ -479,7 +558,7 @@ class ExplorerView(QMainWindow):
     def shutdown(
         self,
     ):
-        """Release explorer playback and background resources once."""
+        """Release explorer playback and child-view resources once."""
 
         if self._is_shutdown:
             return
@@ -487,7 +566,6 @@ class ExplorerView(QMainWindow):
         self._is_shutdown = True
 
         self.stop_audio()
-        self.controller.shutdown()
         self.processed_view.shutdown()
 
     def closeEvent(

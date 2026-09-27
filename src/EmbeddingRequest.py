@@ -26,11 +26,12 @@ class _ResultCollector(AudioCallback):
 
 class EmbeddingRequest:
     """
-    Synchronously ensure one canonical AudioBuffer has an embedding.
+    Synchronously process one canonical AudioBuffer and ensure its embedding.
 
     This class contains no threading. It builds and runs a normal callback
-    pipeline for a random-access chunk. GUI callers may execute ``run`` using
-    LatestJobRunner; scripts and tests may call it directly.
+    pipeline for a random-access chunk and returns the final processed
+    AudioBuffer. GUI callers may execute ``run`` using LatestJobRunner; scripts
+    and tests may call it directly.
     """
 
     def __init__(self, cache: EmbeddingCache, pipeline: Pipeline):
@@ -112,14 +113,9 @@ class EmbeddingRequest:
                 "Interactive embedding pipeline produced no embedding"
             )
 
-        return {
-            "recording_id": processed_buffer.recording_id,
-            "chunk_index": processed_buffer.chunk_index,
-            "values": embedding["values"],
-            "pipeline_hash": embedding["pipeline_hash"],
-            "embedding_name": embeddings_creator.embedding_name,
-            "metadata": embedding.get("metadata", {}),
-            "loaded_from_cache": bool(
-                embedding.get("loaded_from_cache", False)
-            ),
-        }
+        # The processed buffer is the natural result of this callback graph.
+        # It contains both the filtered/resampled waveform used by the model
+        # and the compatible embedding (whether loaded from cache or newly
+        # computed).  Returning it lets explorer clients inspect exactly the
+        # audio representation that produced the embedding.
+        return processed_buffer

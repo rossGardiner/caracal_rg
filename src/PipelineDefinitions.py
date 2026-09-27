@@ -9,7 +9,7 @@ from src.EmbeddingCacheSaver import EmbeddingCacheSaver
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.HighPassFilter import HighPassFilter
 from src.Pipeline import Pipeline
-from src.PipelineDefinition import PipelineDefinition
+from src.PipelineDefinition import PipelineDefinition, StageDefinition
 from src.Resampler import Resampler
 from src.SpeedometerLink import SpeedometerLink
 
@@ -92,15 +92,67 @@ DEFAULT_EMBEDDING_PIPELINE = PipelineDefinition(
         "Compatible cached embeddings are identified by the runtime "
         "pipeline's existing configuration hash."
     ),
-    stage_names=(
-        "CARACAL audio source",
-        "Canonical chunk loader",
-        "High-pass filter",
-        "Speedometer",
-        "Resampler",
-        "Embedding cache lookup",
-        "Perch v2 embeddings",
-        "Embedding cache save",
+    stages=(
+        StageDefinition(
+            stage_type="caracal_streamer",
+            label="CARACAL audio source",
+            parameters={
+                "rootpath": DEFAULT_DATA_ROOT,
+            },
+        ),
+        StageDefinition(
+            stage_type="audio_buffer_loader",
+            label="Canonical chunk loader",
+            parameters={
+                "chunk_duration_s": DEFAULT_CHUNK_DURATION_S,
+                "is_caracal": True,
+            },
+        ),
+        StageDefinition(
+            stage_type="high_pass_filter",
+            label="High-pass filter",
+            parameters={
+                "cutoff_hz": 60.0,
+                "order": 4,
+            },
+        ),
+        StageDefinition(
+            stage_type="speedometer",
+            label="Speedometer",
+            parameters={
+                "report_interval_s": 1.0,
+            },
+        ),
+        StageDefinition(
+            stage_type="resampler",
+            label="Resampler",
+            parameters={
+                "target_sample_rate": 32000,
+            },
+        ),
+        StageDefinition(
+            stage_type="embedding_cache_loader",
+            label="Embedding cache lookup",
+            parameters={
+                "cache_directory": DEFAULT_CACHE_DIRECTORY,
+            },
+        ),
+        StageDefinition(
+            stage_type="embeddings_creator",
+            label="Perch v2 embeddings",
+            parameters={
+                "model_path": DEFAULT_MODEL_PATH,
+                "use_cuda": True,
+                "embedding_name": "perch_v2",
+            },
+        ),
+        StageDefinition(
+            stage_type="embedding_cache_saver",
+            label="Embedding cache save",
+            parameters={
+                "cache_directory": DEFAULT_CACHE_DIRECTORY,
+            },
+        ),
     ),
     builder=build_embedding_pipeline,
 )
