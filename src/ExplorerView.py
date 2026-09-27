@@ -11,6 +11,9 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QDockWidget,
     QMainWindow,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
 )
 
 from PySide6.QtMultimedia import (
@@ -25,12 +28,14 @@ from src.ExplorerModel import ExplorerModel
 from src.ProcessedView import ProcessedView
 
 
-class ControlWindow(QMainWindow):
-    """Explorer view composition and audio playback host.
+class ExplorerView(QWidget):
+    """Compose the interactive explorer views and Qt audio playback.
 
     Explorer domain state lives in ``ExplorerModel`` and asynchronous
-    orchestration lives in ``ExplorerController``. This window now focuses on
-    composing the dockable Qt views and owning Qt multimedia playback.
+    orchestration lives in ``ExplorerController``. ``ExplorerView`` is an
+    ordinary QWidget suitable for embedding in the application tab shell. A
+    private QMainWindow is used only because Qt requires one to host movable
+    and floatable QDockWidgets.
     """
 
     def __init__(
@@ -57,15 +62,39 @@ class ControlWindow(QMainWindow):
         self._playback_source = None
 
         # ==================================================
-        # Main window
+        # View composition
         # ==================================================
 
-        self.setWindowTitle(
-            "Caracal Visualiser"
+        layout = QVBoxLayout(
+            self
         )
-        self.resize(
-            1400,
-            850,
+        layout.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+
+        # QDockWidget can only be managed by QMainWindow. Keep that Qt
+        # implementation detail private so the MVC-facing explorer remains a
+        # normal embeddable QWidget.
+        self._dock_host = QMainWindow(
+            self
+        )
+        self._dock_host.setDockNestingEnabled(
+            True
+        )
+
+        self.status_bar = QStatusBar(
+            self
+        )
+
+        layout.addWidget(
+            self._dock_host,
+            stretch=1,
+        )
+        layout.addWidget(
+            self.status_bar,
         )
 
         # ==================================================
@@ -110,7 +139,7 @@ class ControlWindow(QMainWindow):
         )
 
         self.controller.status_changed.connect(
-            self.statusBar().showMessage
+            self.status_bar.showMessage
         )
         self.controller.stop_browsing_playback_requested.connect(
             self.stop_browsing_audio
@@ -123,10 +152,6 @@ class ControlWindow(QMainWindow):
         # Dockable explorer panes
         # ==================================================
 
-        self.setDockNestingEnabled(
-            True
-        )
-
         self.browsing_dock = self._create_dock(
             title="Source audio",
             object_name="source_audio_dock",
@@ -138,16 +163,16 @@ class ControlWindow(QMainWindow):
             widget=self.processed_view,
         )
 
-        self.addDockWidget(
+        self._dock_host.addDockWidget(
             Qt.DockWidgetArea.LeftDockWidgetArea,
             self.browsing_dock,
         )
-        self.addDockWidget(
+        self._dock_host.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea,
             self.processed_dock,
         )
 
-        self.resizeDocks(
+        self._dock_host.resizeDocks(
             [
                 self.browsing_dock,
                 self.processed_dock,
@@ -173,7 +198,7 @@ class ControlWindow(QMainWindow):
         else:
             self.controller.initialize()
 
-        self.statusBar().showMessage(
+        self.status_bar.showMessage(
             "Ready"
         )
 
@@ -187,7 +212,7 @@ class ControlWindow(QMainWindow):
 
         dock = QDockWidget(
             title,
-            self,
+            self._dock_host,
         )
         dock.setObjectName(
             object_name
@@ -393,7 +418,7 @@ class ControlWindow(QMainWindow):
         if not device.isFormatSupported(
             audio_format
         ):
-            self.statusBar().showMessage(
+            self.status_bar.showMessage(
                 f"Unsupported audio format: "
                 f"{sample_rate} Hz, "
                 f"{channel_count} channel(s)"
@@ -427,7 +452,7 @@ class ControlWindow(QMainWindow):
         self._playback_source = playback_source
 
         duration = len(waveform) / sample_rate
-        self.statusBar().showMessage(
+        self.status_bar.showMessage(
             f"Playing {description}"
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"

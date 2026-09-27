@@ -29,8 +29,8 @@ class BrowsingView(QWidget):
         - playback volume
 
     It deliberately does not perform audio I/O or playback itself.
-    ControlWindow coordinates playback and schedules audio I/O through
-    a background browsing loader.
+    ExplorerView owns Qt playback while ExplorerController schedules audio I/O
+    through background jobs.
     """
 
     recording_selected = Signal(int)

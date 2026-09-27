@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QApplication
 from src.AudioBufferLoader import AudioBufferLoader
 from src.AudioReader import AudioReader
 from src.CaracalStreamer import CaracalStreamer
-from src.ControlWindow import ControlWindow
+from src.ExplorerView import ExplorerView
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.ExplorerModel import ExplorerModel
 from src.EmbeddingsCreator import EmbeddingsCreator
@@ -65,7 +65,7 @@ def main():
         embedding_name=embeddings_creator.embedding_name,
     )
 
-    explorer_view = ControlWindow(
+    explorer_view = ExplorerView(
         model=explorer_model,
     )
 

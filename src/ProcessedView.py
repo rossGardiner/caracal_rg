@@ -31,8 +31,8 @@ class ProcessedView(QWidget):
         - latest pipeline batch status
 
     It does not calculate spectrograms or perform playback itself.
-    ControlWindow coordinates those operations and returns display-ready
-    spectrogram results to this view.
+    ExplorerController coordinates spectrogram work while ExplorerView owns Qt
+    audio playback.
     """
 
     buffer_selected = Signal(int)
@@ -250,9 +250,9 @@ class ProcessedView(QWidget):
     ):
         """
         Update navigation metadata for the processed buffer selected by
-        ControlWindow.
+        ExplorerView.
 
-        The actual waveform remains owned by ControlWindow; the view
+        The actual waveform remains owned by ExplorerView; the view
         stores only the selection index/count needed for its controls.
         """
 

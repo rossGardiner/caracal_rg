@@ -25,18 +25,18 @@ class _GuiBatchDispatcher(QObject):
 
     GuiPipelineLink itself is driven by the background pipeline thread.
     This QObject is created on the Qt thread, so its queued slot can safely
-    hand the newest available batch to ControlWindow.
+    hand the newest available batch to the explorer view.
     """
 
     def __init__(
         self,
         pipeline_link,
-        control_window,
+        explorer_view,
     ):
         super().__init__()
 
         self.pipeline_link = pipeline_link
-        self.control_window = control_window
+        self.explorer_view = explorer_view
 
     @Slot()
     def deliver_latest_batch(
@@ -50,7 +50,7 @@ class _GuiBatchDispatcher(QObject):
         if batch is None:
             return
 
-        self.control_window.update_data(
+        self.explorer_view.update_data(
             batch
         )
 
@@ -74,7 +74,7 @@ class GuiPipelineLink(PipelineLink):
 
     def __init__(
         self,
-        control_window,
+        explorer_view,
         buffer_count=10,
     ):
         super().__init__()
@@ -84,7 +84,7 @@ class GuiPipelineLink(PipelineLink):
                 "buffer_count must be greater than zero"
             )
 
-        self.control_window = control_window
+        self.explorer_view = explorer_view
         self.buffer_count = buffer_count
 
         self.buffers = []
@@ -99,11 +99,11 @@ class GuiPipelineLink(PipelineLink):
         self._signals = _GuiSignals()
 
         # This dispatcher is constructed on the GUI thread. The queued
-        # connection therefore guarantees that ControlWindow is touched only
+        # connection therefore guarantees that the explorer view is touched only
         # from Qt's GUI thread.
         self._dispatcher = _GuiBatchDispatcher(
             pipeline_link=self,
-            control_window=self.control_window,
+            explorer_view=self.explorer_view,
         )
 
         self._signals.batch_available.connect(
@@ -176,7 +176,7 @@ class GuiPipelineLink(PipelineLink):
 
         Called only by the GUI-thread dispatcher. Clearing the notification
         flag here allows the pipeline thread to schedule one new notification
-        while ControlWindow renders the batch that was just taken.
+        while the explorer view renders the batch that was just taken.
         """
 
         with self._gui_batch_lock:
