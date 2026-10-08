@@ -33,6 +33,14 @@ class ExplorerModel:
     current_chunk_index: int = 0
     current_num_chunks: int = 0
 
+    # Recording-navigation state.  These fields describe the logical
+    # recording and the small source-audio window currently held in RAM.
+    # They deliberately do not imply that the whole recording is loaded.
+    recording_duration_s: float = 0.0
+    cursor_time_s: float = 0.0
+    window_start_s: float = 0.0
+    window_duration_s: float = 0.0
+
     browsing_buffers: list = field(
         default_factory=list
     )
@@ -110,6 +118,81 @@ class ExplorerModel:
         self.embedding_name = str(embedding_name)
         self.pipeline_hash = pipeline_hash
         self.audio_packets = audio_packets
+
+
+    def set_recording_navigation(
+        self,
+        *,
+        duration_s: float,
+        cursor_time_s: float = 0.0,
+    ):
+        """Reset navigation state for a newly selected recording."""
+
+        duration_s = max(0.0, float(duration_s))
+        cursor_time_s = min(
+            max(0.0, float(cursor_time_s)),
+            duration_s,
+        )
+
+        self.recording_duration_s = duration_s
+        self.cursor_time_s = cursor_time_s
+        self.window_start_s = 0.0
+        self.window_duration_s = 0.0
+
+    def clear_recording_navigation(self):
+        """Clear recording/window state when nothing is selected."""
+
+        self.recording_duration_s = 0.0
+        self.cursor_time_s = 0.0
+        self.window_start_s = 0.0
+        self.window_duration_s = 0.0
+
+    def set_loaded_window(
+        self,
+        *,
+        start_s: float,
+        duration_s: float,
+        cursor_time_s: float | None = None,
+    ):
+        """Record the small source-audio window currently being explored.
+
+        The window is clamped to the selected recording.  This is pure model
+        state; loading the waveform itself remains the controller's job.
+        """
+
+        recording_duration_s = max(0.0, self.recording_duration_s)
+        start_s = min(
+            max(0.0, float(start_s)),
+            recording_duration_s,
+        )
+        duration_s = max(0.0, float(duration_s))
+        duration_s = min(
+            duration_s,
+            max(0.0, recording_duration_s - start_s),
+        )
+
+        if cursor_time_s is None:
+            cursor_time_s = start_s + (duration_s / 2.0)
+
+        cursor_time_s = min(
+            max(0.0, float(cursor_time_s)),
+            recording_duration_s,
+        )
+
+        self.window_start_s = start_s
+        self.window_duration_s = duration_s
+        self.cursor_time_s = cursor_time_s
+
+    @property
+    def window_end_s(self):
+        return self.window_start_s + self.window_duration_s
+
+    @property
+    def current_source_buffer(self):
+        if not self.browsing_buffers:
+            return None
+
+        return self.browsing_buffers[0]
 
     @property
     def selected_recording_id(self):

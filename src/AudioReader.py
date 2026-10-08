@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 
@@ -147,7 +148,11 @@ class AudioReader:
         return AudioMetadata(
             sample_rate=sample_rate,
             total_samples=total_samples,
-            channels=expected_channels,
+            channels=(
+                1
+                if self.is_caracal
+                else expected_channels
+            ),
             duration_s=(
                 total_samples
                 / sample_rate
@@ -218,9 +223,14 @@ class AudioReader:
             waveform
             sample_rate
 
-        waveform always has shape:
+        waveform has shape:
 
             (samples, channels)
+
+        When is_caracal=True, direct random-access reads preserve the
+        historical CARACAL loader contract by returning mono audio as
+        (samples, 1). Multi-channel source files are mixed down before
+        the waveform is returned.
         """
 
         if start_s < 0:
@@ -320,9 +330,10 @@ class AudioReader:
         """
         Seek into the physical WAV files and read only one range.
 
-        Unlike read_samples(), this path never calls _load_file(), so
-        a request for a small Explorer window does not load an entire
-        physical WAV into memory.
+        CARACAL files are decoded through DataGetter.load_wav() so the
+        packed-wave unpacking and mono-channel selection are identical
+        to the existing sequential loader. Generic WAV files use direct
+        soundfile seeking.
         """
 
         if start_sample < 0:
@@ -396,18 +407,29 @@ class AudioReader:
                 - overlap_start
             )
 
-            with sf.SoundFile(
-                audio_path,
-                mode="r",
-            ) as audio_file:
-                audio_file.seek(
-                    local_start
+            if self.is_caracal:
+                audio, loaded_sample_rate = (
+                    self._read_caracal_range(
+                        audio_path=audio_path,
+                        start_sample=local_start,
+                        sample_count=frames_to_read,
+                        sample_rate=metadata.sample_rate,
+                    )
+                )
+            else:
+                audio, loaded_sample_rate = (
+                    self._read_generic_range(
+                        audio_path=audio_path,
+                        start_sample=local_start,
+                        sample_count=frames_to_read,
+                    )
                 )
 
-                audio = audio_file.read(
-                    frames=frames_to_read,
-                    dtype="float32",
-                    always_2d=True,
+            if loaded_sample_rate != metadata.sample_rate:
+                raise ValueError(
+                    f"Loaded sample rate for {audio_path} "
+                    f"was {loaded_sample_rate} Hz; "
+                    f"expected {metadata.sample_rate} Hz"
                 )
 
             if len(audio) != frames_to_read:
@@ -418,7 +440,7 @@ class AudioReader:
                 )
 
             parts.append(
-                np.asarray(audio)
+                audio
             )
 
             file_start_sample = (
@@ -442,6 +464,117 @@ class AudioReader:
             waveform,
             metadata.sample_rate,
         )
+
+    def _read_caracal_range(
+        self,
+        audio_path,
+        start_sample: int,
+        sample_count: int,
+        sample_rate: int,
+    ):
+        """Read one CARACAL range through CARACAL's own decoder."""
+
+        if DataGetter is None:
+            raise ImportError(
+                "caracal library is required when "
+                "AudioReader(is_caracal=True)"
+            )
+
+        # DataGetter.load_wav() accepts offsets and durations in seconds and
+        # converts them back to frame indices with int(seconds * sr). Move
+        # each value to the next representable float so round-off cannot put
+        # an exact frame boundary one sample early.
+        start_offset_s = self._sample_count_to_seconds(
+            start_sample,
+            sample_rate,
+        )
+
+        duration_s = self._sample_count_to_seconds(
+            sample_count,
+            sample_rate,
+        )
+
+        loaded_sample_rate, audio = DataGetter.load_wav(
+            audio_path,
+            start_offset=start_offset_s,
+            duration=duration_s,
+            audio_mode="mono",
+        )
+
+        return (
+            self._as_samples_by_channels(audio),
+            int(loaded_sample_rate),
+        )
+
+    @staticmethod
+    def _read_generic_range(
+        audio_path,
+        start_sample: int,
+        sample_count: int,
+    ):
+        """Read one range from an ordinary WAV with soundfile."""
+
+        with sf.SoundFile(
+            audio_path,
+            mode="r",
+        ) as audio_file:
+            audio_file.seek(
+                start_sample
+            )
+
+            audio = audio_file.read(
+                frames=sample_count,
+                dtype="float32",
+                always_2d=True,
+            )
+
+            sample_rate = int(
+                audio_file.samplerate
+            )
+
+        return (
+            audio,
+            sample_rate,
+        )
+
+    @staticmethod
+    def _sample_count_to_seconds(
+        sample_count: int,
+        sample_rate: int,
+    ) -> float:
+        """Convert an exact frame count for DataGetter's seconds API."""
+
+        seconds = (
+            sample_count
+            / sample_rate
+        )
+
+        return math.nextafter(
+            seconds,
+            math.inf,
+        )
+
+    @staticmethod
+    def _as_samples_by_channels(
+        audio,
+    ) -> np.ndarray:
+        """Return the application's standard samples x channels shape."""
+
+        audio = np.asarray(
+            audio
+        )
+
+        if audio.ndim == 1:
+            audio = audio[:, np.newaxis]
+
+        if audio.ndim != 2:
+            raise ValueError(
+                "Audio reads must have shape "
+                "(samples,) or (samples, channels)"
+            )
+
+        return audio
+
 
     # ======================================================
     # Sample-based sequential access

@@ -346,6 +346,11 @@ class ExplorerController(QObject):
                 "Selected AudioPacket has no duration"
             )
 
+        self.model.set_recording_navigation(
+            duration_s=packet.duration,
+            cursor_time_s=0.0,
+        )
+
         self.model.current_num_chunks = (
             self.model.chunk_grid.chunk_count(
                 packet.duration
@@ -369,6 +374,7 @@ class ExplorerController(QObject):
         self.model.current_audio_packet = None
         self.model.current_chunk_index = 0
         self.model.current_num_chunks = 0
+        self.model.clear_recording_navigation()
         self.model.browsing_buffers = []
         self._clear_processed_audio()
 
@@ -419,6 +425,12 @@ class ExplorerController(QObject):
         start_s, end_s = self.model.chunk_grid.chunk_bounds(
             self.model.current_chunk_index,
             total_duration_s=self.model.current_audio_packet.duration,
+        )
+
+        self.model.set_loaded_window(
+            start_s=start_s,
+            duration_s=(end_s - start_s),
+            cursor_time_s=start_s + ((end_s - start_s) / 2.0),
         )
 
         self._browsing_request_id += 1
