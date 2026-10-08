@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 
 import numpy as np
 import soundfile as sf
@@ -9,6 +10,17 @@ try:
     from caracal.datagetter import DataGetter
 except ImportError:
     DataGetter = None
+
+
+@dataclass(frozen=True)
+class AudioMetadata:
+    """Lightweight metadata for one logical recording."""
+
+    sample_rate: int
+    total_samples: int
+    channels: int
+    duration_s: float
+    file_count: int
 
 
 class AudioReader:
@@ -40,10 +52,10 @@ class AudioReader:
         self.is_caracal = is_caracal
 
         #
-        # Sequential reads commonly access the same physical
-        # WAV repeatedly. Keep the most recently loaded file
-        # in memory so a 5-second chunk reader does not reload
-        # the entire WAV for every chunk.
+        # Keep the existing whole-file cache for the sequential
+        # AudioBufferLoader path. The new Explorer-oriented window
+        # API below deliberately bypasses this cache and seeks
+        # directly into the physical WAV files.
         #
         self._cached_path = None
         self._cached_audio = None
@@ -53,18 +65,14 @@ class AudioReader:
     # Recording information
     # ======================================================
 
-    def get_info(
+    def get_metadata(
         self,
         packet,
-    ):
+    ) -> AudioMetadata:
         """
-        Return:
+        Return lightweight metadata for the complete logical recording.
 
-            sample_rate
-            total_samples
-
-        for the complete logical recording represented by
-        packet.audio_paths.
+        Only file headers are inspected; no waveform samples are loaded.
         """
 
         if not packet.audio_paths:
@@ -134,10 +142,42 @@ class AudioReader:
             )
 
         assert sample_rate is not None
+        assert expected_channels is not None
+
+        return AudioMetadata(
+            sample_rate=sample_rate,
+            total_samples=total_samples,
+            channels=expected_channels,
+            duration_s=(
+                total_samples
+                / sample_rate
+            ),
+            file_count=len(packet.audio_paths),
+        )
+
+    def get_info(
+        self,
+        packet,
+    ):
+        """
+        Return:
+
+            sample_rate
+            total_samples
+
+        for the complete logical recording represented by
+        packet.audio_paths.
+
+        Kept as the compatibility API used by AudioBufferLoader.
+        """
+
+        metadata = self.get_metadata(
+            packet
+        )
 
         return (
-            sample_rate,
-            total_samples,
+            metadata.sample_rate,
+            metadata.total_samples,
         )
 
     def duration(
@@ -148,17 +188,9 @@ class AudioReader:
         Return the total logical recording duration in seconds.
         """
 
-        (
-            sample_rate,
-            total_samples,
-        ) = self.get_info(
+        return self.get_metadata(
             packet
-        )
-
-        return (
-            total_samples
-            / sample_rate
-        )
+        ).duration_s
 
     # ======================================================
     # Time-based random access
@@ -175,6 +207,11 @@ class AudioReader:
 
         start_s is relative to the beginning of the complete
         logical recording, not relative to packet.offset.
+
+        This time-based API seeks directly into the physical WAV
+        files and reads only the requested samples. It does not
+        populate the whole-file cache used by sequential pipeline
+        loading.
 
         Returns:
 
@@ -196,37 +233,41 @@ class AudioReader:
                 "duration_s must be greater than zero"
             )
 
-        (
-            sample_rate,
-            _,
-        ) = self.get_info(
+        metadata = self.get_metadata(
             packet
         )
 
         start_sample = round(
             start_s
-            * sample_rate
+            * metadata.sample_rate
         )
 
         sample_count = round(
             duration_s
-            * sample_rate
+            * metadata.sample_rate
         )
 
-        return self.read_samples(
+        return self._read_samples_direct(
             packet=packet,
             start_sample=start_sample,
             sample_count=sample_count,
+            metadata=metadata,
         )
 
-    def read_buffer(
+    def read_window(
         self,
         packet,
-        chunk_index: int,
         start_s: float,
         duration_s: float,
-    ):
-        """Read one logical region and package it as an AudioBuffer."""
+        chunk_index: int | None = None,
+    ) -> AudioBuffer:
+        """
+        Read one small random-access window as an AudioBuffer.
+
+        This is the Explorer-oriented API. Only the requested range
+        is read from disk, even when the logical recording spans very
+        large physical WAV files.
+        """
 
         waveform, sample_rate = self.read(
             packet=packet,
@@ -245,8 +286,165 @@ class AudioReader:
             chunk_index=chunk_index,
         )
 
+    def read_buffer(
+        self,
+        packet,
+        chunk_index: int,
+        start_s: float,
+        duration_s: float,
+    ):
+        """
+        Compatibility wrapper for existing Explorer callers.
+
+        New code should prefer read_window().
+        """
+
+        return self.read_window(
+            packet=packet,
+            start_s=start_s,
+            duration_s=duration_s,
+            chunk_index=chunk_index,
+        )
+
     # ======================================================
-    # Sample-based random access
+    # Direct sample-range reads
+    # ======================================================
+
+    def _read_samples_direct(
+        self,
+        packet,
+        start_sample: int,
+        sample_count: int,
+        metadata: AudioMetadata | None = None,
+    ):
+        """
+        Seek into the physical WAV files and read only one range.
+
+        Unlike read_samples(), this path never calls _load_file(), so
+        a request for a small Explorer window does not load an entire
+        physical WAV into memory.
+        """
+
+        if start_sample < 0:
+            raise ValueError(
+                "start_sample cannot be negative"
+            )
+
+        if sample_count <= 0:
+            raise ValueError(
+                "sample_count must be greater than zero"
+            )
+
+        if metadata is None:
+            metadata = self.get_metadata(
+                packet
+            )
+
+        if start_sample >= metadata.total_samples:
+            raise ValueError(
+                "Requested audio starts beyond the "
+                "available recording"
+            )
+
+        end_sample = min(
+            start_sample
+            + sample_count,
+            metadata.total_samples,
+        )
+
+        parts = []
+        file_start_sample = 0
+
+        for audio_path in packet.audio_paths:
+            file_info = sf.info(
+                audio_path
+            )
+
+            file_samples = int(
+                file_info.frames
+            )
+
+            file_end_sample = (
+                file_start_sample
+                + file_samples
+            )
+
+            if end_sample <= file_start_sample:
+                break
+
+            if start_sample >= file_end_sample:
+                file_start_sample = file_end_sample
+                continue
+
+            overlap_start = max(
+                start_sample,
+                file_start_sample,
+            )
+
+            overlap_end = min(
+                end_sample,
+                file_end_sample,
+            )
+
+            local_start = (
+                overlap_start
+                - file_start_sample
+            )
+
+            frames_to_read = (
+                overlap_end
+                - overlap_start
+            )
+
+            with sf.SoundFile(
+                audio_path,
+                mode="r",
+            ) as audio_file:
+                audio_file.seek(
+                    local_start
+                )
+
+                audio = audio_file.read(
+                    frames=frames_to_read,
+                    dtype="float32",
+                    always_2d=True,
+                )
+
+            if len(audio) != frames_to_read:
+                raise ValueError(
+                    f"Short read from {audio_path}: "
+                    f"expected {frames_to_read} samples, "
+                    f"received {len(audio)}"
+                )
+
+            parts.append(
+                np.asarray(audio)
+            )
+
+            file_start_sample = (
+                file_end_sample
+            )
+
+        if not parts:
+            raise ValueError(
+                "Requested audio region contained no samples"
+            )
+
+        if len(parts) == 1:
+            waveform = parts[0]
+        else:
+            waveform = np.concatenate(
+                parts,
+                axis=0,
+            )
+
+        return (
+            waveform,
+            metadata.sample_rate,
+        )
+
+    # ======================================================
+    # Sample-based sequential access
     # ======================================================
 
     def read_samples(
@@ -422,6 +620,10 @@ class AudioReader:
         The most recently accessed WAV is cached because
         sequential 5-second reads will usually hit the same
         physical file many times.
+
+        This legacy whole-file path is retained for
+        AudioBufferLoader. Explorer window reads use direct seeks
+        instead.
         """
 
         if (
