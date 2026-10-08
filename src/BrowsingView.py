@@ -62,18 +62,7 @@ class BrowsingView(QWidget):
 
         self.recording_selector = QComboBox()
 
-        for index, packet in enumerate(
-            self.audio_packets
-        ):
-            label = (
-                packet.display_name
-                or f"Recording {index + 1}"
-            )
-
-            self.recording_selector.addItem(
-                label,
-                userData=index,
-            )
+        self._populate_recording_selector()
 
         self.recording_selector.currentIndexChanged.connect(
             self.recording_selected.emit
@@ -259,6 +248,44 @@ class BrowsingView(QWidget):
     # ======================================================
     # Public interface
     # ======================================================
+
+    def set_audio_packets(
+        self,
+        audio_packets,
+        selected_packet_index=None,
+    ):
+        """Replace the recording selector contents without emitting selection."""
+
+        self.audio_packets = list(audio_packets)
+
+        self.recording_selector.blockSignals(True)
+        self.recording_selector.clear()
+        self._populate_recording_selector()
+
+        if self.audio_packets:
+            self.recording_selector.setEnabled(True)
+            if selected_packet_index is None:
+                selected_packet_index = 0
+            selected_packet_index = max(
+                0,
+                min(
+                    int(selected_packet_index),
+                    len(self.audio_packets) - 1,
+                ),
+            )
+            self.recording_selector.setCurrentIndex(
+                selected_packet_index
+            )
+        else:
+            self.recording_selector.setCurrentIndex(-1)
+            self.set_no_recordings()
+
+        self.recording_selector.blockSignals(False)
+
+    def _populate_recording_selector(self):
+        for index, packet in enumerate(self.audio_packets):
+            label = packet.display_name or f"Recording {index + 1}"
+            self.recording_selector.addItem(label, userData=index)
 
     def recording_packet_index(
         self,

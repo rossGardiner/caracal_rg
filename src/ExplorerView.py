@@ -11,8 +11,10 @@ from PySide6.QtCore import (
 
 from PySide6.QtWidgets import (
     QDockWidget,
+    QLabel,
     QMainWindow,
     QStatusBar,
+    QToolBar,
 )
 
 from PySide6.QtMultimedia import (
@@ -78,6 +80,20 @@ class ExplorerView(QMainWindow):
         self.setStatusBar(
             self.status_bar
         )
+
+        self.pipeline_toolbar = QToolBar(
+            "Active pipeline",
+            self,
+        )
+        self.pipeline_toolbar.setMovable(False)
+        self.pipeline_toolbar.addWidget(QLabel("Active pipeline: "))
+        self.active_pipeline_name_value = QLabel()
+        self.pipeline_toolbar.addWidget(self.active_pipeline_name_value)
+        self.pipeline_toolbar.addSeparator()
+        self.pipeline_toolbar.addWidget(QLabel("Hash: "))
+        self.active_pipeline_hash_value = QLabel()
+        self.pipeline_toolbar.addWidget(self.active_pipeline_hash_value)
+        self.addToolBar(self.pipeline_toolbar)
 
         # ==================================================
         # GUI components
@@ -153,6 +169,10 @@ class ExplorerView(QMainWindow):
         # Initial state
         # ==================================================
 
+        self.set_active_pipeline(
+            self.model.pipeline_name,
+            self.model.pipeline_hash,
+        )
         self.status_bar.showMessage(
             "Ready"
         )
@@ -239,6 +259,19 @@ class ExplorerView(QMainWindow):
         self.status_bar.showMessage(
             message
         )
+
+    def set_active_pipeline(self, name: str, pipeline_hash: str):
+        self.active_pipeline_name_value.setText(str(name))
+        self.active_pipeline_hash_value.setText(str(pipeline_hash))
+
+    def set_audio_packets(self, audio_packets, selected_packet_index=None):
+        self.browsing_view.set_audio_packets(
+            audio_packets,
+            selected_packet_index=selected_packet_index,
+        )
+
+    def set_embedding_name(self, embedding_name: str):
+        self.processed_view.set_embedding_name(embedding_name)
 
     def set_browsing_controls_enabled(self, enabled: bool):
         self.browsing_view.set_browsing_controls_enabled(

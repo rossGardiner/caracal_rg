@@ -34,6 +34,9 @@ class PipelineRunModel:
     pipeline_source: str = ""
     pipeline_editable: bool = False
     pipeline_dirty: bool = False
+    active_pipeline_name: str | None = None
+    active_pipeline_hash: str | None = None
+    activation_pending: bool = False
     status: PipelineRunStatus = PipelineRunStatus.IDLE
     chunks_processed: int = 0
     audio_seconds_processed: float = 0.0

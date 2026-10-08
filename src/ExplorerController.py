@@ -2,7 +2,12 @@ from functools import partial
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from src.AudioBufferLoader import AudioBufferLoader
+from src.AudioReader import AudioReader
+from src.CaracalStreamer import CaracalStreamer
+from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.EmbeddingRequest import EmbeddingRequest
+from src.EmbeddingsCreator import EmbeddingsCreator
 from src.ExplorerModel import ExplorerModel
 from src.LatestJobRunner import LatestJobRunner
 from src.SpectrogramData import calculate_spectrogram
@@ -122,6 +127,87 @@ class ExplorerController(QObject):
         self.processed_spectrogram_jobs.failed.connect(
             self._processed_spectrogram_failed
         )
+
+    @Slot(str, object)
+    def activate_pipeline(self, pipeline_name: str, pipeline):
+        """Make one runtime pipeline the Explorer's active configuration."""
+
+        source = pipeline.get_link(CaracalStreamer)
+        loader = pipeline.get_link(AudioBufferLoader)
+        cache_loader = pipeline.get_link(EmbeddingCacheLoader)
+        embeddings_creator = pipeline.get_link(EmbeddingsCreator)
+
+        # EmbeddingRequest currently mirrors the interactive subset of the
+        # configured callback graph, so fail activation early if that subset
+        # is not available rather than leaving the Explorer half-switched.
+        candidate_request = EmbeddingRequest(
+            cache=cache_loader.cache,
+            pipeline=pipeline,
+        )
+
+        previous_recording_id = self.model.selected_recording_id
+
+        self.stop_browsing_playback_requested.emit()
+        self.stop_processed_playback_requested.emit()
+
+        # Invalidate results already running for the previous pipeline.
+        self._browsing_request_id += 1
+        self._processed_spectrogram_request_id += 1
+        self._embedding_cache_request_id += 1
+        self._interactive_embedding_request_id += 1
+
+        self.model.set_pipeline_context(
+            pipeline=pipeline,
+            pipeline_name=pipeline_name,
+            audio_packet_source=source,
+            audio_reader=AudioReader(is_caracal=loader.is_caracal),
+            chunk_grid=loader.chunk_grid,
+            embedding_cache=cache_loader.cache,
+            embedding_name=embeddings_creator.embedding_name,
+        )
+        self.embedding_request = candidate_request
+
+        self.model.browsing_buffers = []
+        self.model.processed_buffers = []
+        self.model.current_processed_buffer_index = 0
+        self.model.interactive_embeddings_by_key.clear()
+
+        selected_packet_index = None
+        if previous_recording_id is not None:
+            for index, packet in enumerate(self.model.audio_packets):
+                if packet.recording_id == previous_recording_id:
+                    selected_packet_index = index
+                    break
+
+        if selected_packet_index is None and self.model.audio_packets:
+            selected_packet_index = 0
+
+        self.view.set_active_pipeline(
+            self.model.pipeline_name,
+            self.model.pipeline_hash,
+        )
+        self.view.set_embedding_name(self.model.embedding_name)
+        self.view.set_audio_packets(
+            self.model.audio_packets,
+            selected_packet_index=selected_packet_index,
+        )
+        self.view.clear_browsing_spectrogram()
+        self._clear_processed_audio()
+        self.view.clear_recording_embeddings(
+            f"Loading cached {self.model.embedding_name!r} embeddings..."
+        )
+
+        if selected_packet_index is None:
+            self._clear_recording_selection()
+        else:
+            self.recording_selected(selected_packet_index)
+
+        self.status_changed.emit(
+            f"Explorer now using {self.model.pipeline_name} "
+            f"({self.model.pipeline_hash})"
+        )
+
+        return self.model.pipeline_hash
 
     def initialize(self, packet_index=None):
         """Initialise the explorer selection without doing work in a constructor."""

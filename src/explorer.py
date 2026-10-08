@@ -111,6 +111,7 @@ def main():
         chunk_grid=loader.chunk_grid,
         embedding_cache=cache_loader.cache,
         pipeline=pipeline,
+        pipeline_name=builtin_pipeline_definitions[0].name,
         embedding_name=embeddings_creator.embedding_name,
     )
 
@@ -131,6 +132,8 @@ def main():
             definition.name
             for definition in pipeline_definitions
         ),
+        active_pipeline_name=explorer_model.pipeline_name,
+        active_pipeline_hash=explorer_model.pipeline_hash,
     )
     pipeline_view = PipelineView()
     pipeline_runner = PipelineRunner()
@@ -142,6 +145,27 @@ def main():
         builtin_pipeline_definitions=builtin_pipeline_definitions,
         user_pipeline_definitions=user_pipeline_definitions,
         definition_store=definition_store,
+    )
+
+    def activate_pipeline_in_explorer(name, selected_pipeline):
+        try:
+            pipeline_hash = explorer_controller.activate_pipeline(
+                name,
+                selected_pipeline,
+            )
+        except Exception as exc:
+            pipeline_controller.pipeline_activation_failed(
+                f"Could not activate pipeline in Explorer: {exc}"
+            )
+            return
+
+        pipeline_controller.set_active_pipeline(
+            name,
+            pipeline_hash,
+        )
+
+    pipeline_controller.pipeline_activation_ready.connect(
+        activate_pipeline_in_explorer
     )
 
     window = MainWindow(

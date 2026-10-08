@@ -19,6 +19,7 @@ class ExplorerModel:
     chunk_grid: CanonicalChunkGrid
     embedding_cache: object
     pipeline: Pipeline
+    pipeline_name: str = "Configured pipeline"
     embedding_name: str = "perch_v2"
 
     audio_packets: list = field(
@@ -70,11 +71,45 @@ class ExplorerModel:
             self.audio_packet_source.get_audio_packets()
         )
 
-        # Preserve the explorer's previous behaviour: cache compatibility is
-        # fixed from the configured pipeline at construction time.
+        # Cache compatibility follows the currently active runtime pipeline.
+        # set_pipeline_context() refreshes this snapshot when the user activates
+        # a different definition in the Explorer.
         self.pipeline_hash = (
             self.pipeline.get_config_hash()
         )
+
+
+    def set_pipeline_context(
+        self,
+        *,
+        pipeline: Pipeline,
+        pipeline_name: str,
+        audio_packet_source,
+        audio_reader: AudioReader,
+        chunk_grid: CanonicalChunkGrid,
+        embedding_cache,
+        embedding_name: str,
+    ):
+        """Replace the pipeline and the explorer services derived from it."""
+
+        if not isinstance(pipeline, Pipeline):
+            raise TypeError("pipeline must be a Pipeline")
+
+        if not isinstance(chunk_grid, CanonicalChunkGrid):
+            raise TypeError("chunk_grid must be a CanonicalChunkGrid")
+
+        pipeline_hash = pipeline.get_config_hash()
+        audio_packets = audio_packet_source.get_audio_packets()
+
+        self.pipeline = pipeline
+        self.pipeline_name = str(pipeline_name)
+        self.audio_packet_source = audio_packet_source
+        self.audio_reader = audio_reader
+        self.chunk_grid = chunk_grid
+        self.embedding_cache = embedding_cache
+        self.embedding_name = str(embedding_name)
+        self.pipeline_hash = pipeline_hash
+        self.audio_packets = audio_packets
 
     @property
     def selected_recording_id(self):

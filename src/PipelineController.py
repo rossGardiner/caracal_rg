@@ -2,10 +2,11 @@
 
 from functools import partial
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, Signal, Slot
 
 from src.PipelineDefinition import PipelineDefinition, StageDefinition
 from src.PipelineDefinitionStore import PipelineDefinitionStore
+from src.LatestJobRunner import LatestJobRunner
 from src.PipelineFactory import PipelineFactory
 from src.PipelineRunner import PipelineRunner
 from src.PipelineRunModel import PipelineRunModel, PipelineRunStatus
@@ -14,6 +15,8 @@ from src.PipelineView import PipelineView
 
 class PipelineController(QObject):
     """Coordinate pipeline editing, execution, telemetry, and presentation."""
+
+    pipeline_activation_ready = Signal(str, object)
 
     def __init__(
         self,
@@ -33,6 +36,14 @@ class PipelineController(QObject):
         self.runner = runner
         self.pipeline_factory = pipeline_factory
         self.definition_store = definition_store
+        self._activation_request_id = 0
+        self._activation_pipeline_name = None
+        self.activation_jobs = LatestJobRunner(
+            name="pipeline-activation-jobs",
+            parent=self,
+        )
+        self.activation_jobs.ready.connect(self._activation_ready)
+        self.activation_jobs.failed.connect(self._activation_failed)
 
         if not builtin_pipeline_definitions:
             raise ValueError("At least one built-in pipeline definition is required")
@@ -68,6 +79,7 @@ class PipelineController(QObject):
         self.view.duplicate_pipeline_requested.connect(self.duplicate_pipeline)
         self.view.save_pipeline_requested.connect(self.save_pipeline)
         self.view.delete_pipeline_requested.connect(self.delete_pipeline)
+        self.view.use_in_explorer_requested.connect(self.use_in_explorer)
         self.view.add_stage_requested.connect(self.add_stage)
         self.view.edit_stage_requested.connect(self.edit_stage)
         self.view.remove_stage_requested.connect(self.remove_stage)
@@ -199,6 +211,70 @@ class PipelineController(QObject):
         self.model.error = None
         self._apply_selected_definition()
         self._refresh_pipeline_names()
+        self.refresh_view()
+
+    @Slot()
+    def use_in_explorer(self):
+        """Build a detached copy of the selected pipeline for Explorer use."""
+
+        if self._run_is_active() or self.model.activation_pending:
+            return
+
+        definition = self._selected_definition().copy()
+        self._activation_pipeline_name = definition.name
+        self._activation_request_id += 1
+        request_id = self._activation_request_id
+        self.model.activation_pending = True
+        self.model.error = None
+        self.refresh_view()
+
+        self.activation_jobs.submit(
+            request_id,
+            partial(
+                self.pipeline_factory.build,
+                definition,
+            ),
+        )
+
+    @Slot(int, object)
+    def _activation_ready(self, request_id: int, pipeline):
+        if request_id != self._activation_request_id:
+            return
+
+        name = self._activation_pipeline_name
+        if name is None:
+            self.pipeline_activation_failed(
+                "Could not activate pipeline in Explorer: missing pipeline name"
+            )
+            return
+
+        self.pipeline_activation_ready.emit(name, pipeline)
+
+    @Slot(int, str)
+    def _activation_failed(self, request_id: int, message: str):
+        if request_id != self._activation_request_id:
+            return
+
+        self.pipeline_activation_failed(
+            f"Could not activate pipeline in Explorer: {message}"
+        )
+
+    def set_active_pipeline(self, name: str, pipeline_hash: str):
+        """Record a successful Explorer activation."""
+
+        self.model.activation_pending = False
+        self._activation_pipeline_name = None
+        self.model.active_pipeline_name = str(name)
+        self.model.active_pipeline_hash = str(pipeline_hash)
+        if self.model.selected_pipeline == name:
+            self.model.pipeline_hash = str(pipeline_hash)
+        self.model.error = None
+        self.refresh_view()
+
+    def pipeline_activation_failed(self, message: str):
+        self.model.activation_pending = False
+        self._activation_pipeline_name = None
+        self.model.error = str(message)
         self.refresh_view()
 
     @Slot(int)
@@ -349,6 +425,7 @@ class PipelineController(QObject):
             self.refresh_view()
 
     def shutdown(self):
+        self.activation_jobs.shutdown()
         self.runner.shutdown()
 
     def refresh_view(self):

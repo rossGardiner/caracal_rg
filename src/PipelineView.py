@@ -36,6 +36,7 @@ class PipelineView(QWidget):
     duplicate_pipeline_requested = Signal()
     save_pipeline_requested = Signal()
     delete_pipeline_requested = Signal()
+    use_in_explorer_requested = Signal()
     add_stage_requested = Signal(int)
     edit_stage_requested = Signal(int)
     remove_stage_requested = Signal(int)
@@ -61,6 +62,7 @@ class PipelineView(QWidget):
         self.duplicate_pipeline_button = QPushButton("Duplicate")
         self.save_pipeline_button = QPushButton("Save")
         self.delete_pipeline_button = QPushButton("Delete")
+        self.use_in_explorer_button = QPushButton("Use in Explorer")
         self.new_pipeline_button.setToolTip(
             "Create an editable pipeline from the application default"
         )
@@ -72,6 +74,9 @@ class PipelineView(QWidget):
         )
         self.delete_pipeline_button.setToolTip(
             "Delete the selected user pipeline"
+        )
+        self.use_in_explorer_button.setToolTip(
+            "Make the selected pipeline the Explorer's active pipeline"
         )
         self.new_pipeline_button.clicked.connect(
             self.new_pipeline_requested.emit
@@ -85,12 +90,16 @@ class PipelineView(QWidget):
         self.delete_pipeline_button.clicked.connect(
             self.delete_pipeline_requested.emit
         )
+        self.use_in_explorer_button.clicked.connect(
+            self.use_in_explorer_requested.emit
+        )
 
         pipeline_actions = QHBoxLayout()
         pipeline_actions.addWidget(self.new_pipeline_button)
         pipeline_actions.addWidget(self.duplicate_pipeline_button)
         pipeline_actions.addWidget(self.save_pipeline_button)
         pipeline_actions.addWidget(self.delete_pipeline_button)
+        pipeline_actions.addWidget(self.use_in_explorer_button)
         pipeline_actions.addStretch(1)
 
         self.start_button = QPushButton("Start")
@@ -115,6 +124,8 @@ class PipelineView(QWidget):
 
         self.status_value = QLabel()
         self.definition_state_value = QLabel()
+        self.active_pipeline_value = QLabel()
+        self.active_pipeline_value.setWordWrap(True)
         self.description_value = QLabel()
         self.description_value.setWordWrap(True)
 
@@ -207,6 +218,10 @@ class PipelineView(QWidget):
         selection_layout.addRow(
             "Status:",
             self.status_value,
+        )
+        selection_layout.addRow(
+            "Explorer active:",
+            self.active_pipeline_value,
         )
 
         layout = QVBoxLayout(self)
@@ -319,6 +334,7 @@ class PipelineView(QWidget):
             PipelineRunStatus.PAUSED,
             PipelineRunStatus.STOPPING,
         }
+        busy = active or model.activation_pending
 
         self.status_value.setText(
             model.status.value
@@ -333,15 +349,24 @@ class PipelineView(QWidget):
         else:
             definition_state += " · Duplicate to edit"
         self.definition_state_value.setText(definition_state)
+        if model.active_pipeline_name is None:
+            active_pipeline_text = "None"
+        elif model.active_pipeline_hash:
+            active_pipeline_text = (
+                f"{model.active_pipeline_name} · {model.active_pipeline_hash}"
+            )
+        else:
+            active_pipeline_text = model.active_pipeline_name
+        self.active_pipeline_value.setText(active_pipeline_text)
         self.description_value.setText(
             model.pipeline_description
         )
         self._render_stages(
             model.pipeline_stages,
-            editable=model.pipeline_editable and not active,
+            editable=model.pipeline_editable and not busy,
         )
         self.pipeline_hash_value.setText(
-            model.pipeline_hash or "Calculated when the pipeline is started"
+            model.pipeline_hash or "Calculated when the pipeline is started or activated"
         )
 
         self.chunks_value.setText(
@@ -363,17 +388,23 @@ class PipelineView(QWidget):
             model.error or ""
         )
 
-        self.pipeline_selector.setEnabled(not active)
-        self.new_pipeline_button.setEnabled(not active)
-        self.duplicate_pipeline_button.setEnabled(not active)
+        self.pipeline_selector.setEnabled(not busy)
+        self.new_pipeline_button.setEnabled(not busy)
+        self.duplicate_pipeline_button.setEnabled(not busy)
         self.save_pipeline_button.setEnabled(
-            not active and model.pipeline_editable and model.pipeline_dirty
+            not busy and model.pipeline_editable and model.pipeline_dirty
         )
         self.delete_pipeline_button.setEnabled(
-            not active and model.pipeline_editable
+            not busy and model.pipeline_editable
+        )
+        self.use_in_explorer_button.setEnabled(
+            not busy
+        )
+        self.use_in_explorer_button.setText(
+            "Activating..." if model.activation_pending else "Use in Explorer"
         )
         self.add_stage_button.setEnabled(
-            not active and model.pipeline_editable
+            not busy and model.pipeline_editable
         )
 
         has_selected_stage = (
@@ -381,25 +412,25 @@ class PipelineView(QWidget):
             and self._selected_stage_index < len(model.pipeline_stages)
         )
         self.remove_stage_button.setEnabled(
-            not active
+            not busy
             and model.pipeline_editable
             and has_selected_stage
             and len(model.pipeline_stages) > 1
         )
         self.move_stage_up_button.setEnabled(
-            not active
+            not busy
             and model.pipeline_editable
             and has_selected_stage
             and self._selected_stage_index > 0
         )
         self.move_stage_down_button.setEnabled(
-            not active
+            not busy
             and model.pipeline_editable
             and has_selected_stage
             and self._selected_stage_index < len(model.pipeline_stages) - 1
         )
 
-        self.start_button.setEnabled(not active)
+        self.start_button.setEnabled(not busy)
         self.pause_button.setEnabled(
             model.status in {
                 PipelineRunStatus.RUNNING,

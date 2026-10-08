@@ -366,6 +366,17 @@ class ProcessedView(QWidget):
     # Embeddings
     # ======================================================
 
+    def set_embedding_name(
+        self,
+        embedding_name,
+    ):
+        """Switch the embedding namespace rendered by this view."""
+
+        self.embedding_visualiser.embedding_name = str(embedding_name)
+        self.embedding_visualiser.clear_history(
+            status_text=f"Waiting for {embedding_name!r} embeddings..."
+        )
+
     def set_recording_embeddings(
         self,
         embeddings,
