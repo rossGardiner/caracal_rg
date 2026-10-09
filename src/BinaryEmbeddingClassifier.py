@@ -474,7 +474,15 @@ class BinaryEmbeddingClassifier:
                 f"{name} contains NaN or infinite values"
             )
 
-        return np.ascontiguousarray(
+        matrix = np.ascontiguousarray(
             matrix,
             dtype=np.float32,
         )
+
+        # EmbeddingBatch intentionally exposes read-only NumPy matrices.
+        # PyTorch cannot safely wrap a non-writeable array with from_numpy,
+        # so make a bounded copy only when required.
+        if not matrix.flags.writeable:
+            matrix = matrix.copy()
+
+        return matrix
