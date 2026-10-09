@@ -299,6 +299,158 @@ class EmbeddingCache:
 
         return results
     
+    def iter_embedding_refs(
+        self,
+        pipeline_hash,
+        embedding_name,
+    ):
+        """Yield cached embedding identities without loading vector arrays.
+
+        This is the cheap metadata scan used by disk-backed corpus consumers.
+        Each cache file is opened only to read/validate its small identity
+        fields; the potentially large ``values`` array remains untouched.
+        """
+
+        pipeline_hash = str(pipeline_hash)
+        embedding_name = str(embedding_name)
+
+        space_directory = (
+            self.root_directory
+            / self._safe_filename(pipeline_hash)
+            / self._safe_filename(embedding_name)
+        )
+
+        if not space_directory.is_dir():
+            return
+
+        for path in sorted(
+            space_directory.glob("*/*.npz")
+        ):
+            with np.load(
+                path,
+                allow_pickle=False,
+            ) as saved:
+                recording_id = str(
+                    saved["recording_id"].item()
+                )
+                chunk_index = int(
+                    saved["chunk_index"].item()
+                )
+                stored_pipeline_hash = str(
+                    saved["pipeline_hash"].item()
+                )
+                stored_embedding_name = str(
+                    saved["embedding_name"].item()
+                )
+
+            if stored_pipeline_hash != pipeline_hash:
+                raise ValueError(
+                    f"Cached pipeline_hash mismatch at {path}"
+                )
+
+            if stored_embedding_name != embedding_name:
+                raise ValueError(
+                    f"Cached embedding_name mismatch at {path}"
+                )
+
+            expected_path = self._get_path(
+                recording_id=recording_id,
+                chunk_index=chunk_index,
+                pipeline_hash=pipeline_hash,
+                embedding_name=embedding_name,
+            )
+
+            if path.resolve() != expected_path.resolve():
+                raise ValueError(
+                    f"Cached embedding is stored at the wrong path: {path}"
+                )
+
+            yield {
+                "recording_id": recording_id,
+                "chunk_index": chunk_index,
+            }
+
+    def iter_embeddings(
+        self,
+        pipeline_hash,
+        embedding_name,
+    ):
+        """Yield every cached embedding in one compatible embedding space.
+
+        Entries are read lazily from disk.  This is the repository boundary
+        used by corpus-style consumers such as active learning, which need to
+        scan across recordings rather than query one recording at a time.
+
+        The existing per-recording load/list APIs remain unchanged.
+        """
+
+        pipeline_hash = str(pipeline_hash)
+        embedding_name = str(embedding_name)
+
+        space_directory = (
+            self.root_directory
+            / self._safe_filename(pipeline_hash)
+            / self._safe_filename(embedding_name)
+        )
+
+        if not space_directory.is_dir():
+            return
+
+        for path in sorted(
+            space_directory.glob("*/*.npz")
+        ):
+            with np.load(
+                path,
+                allow_pickle=False,
+            ) as saved:
+                recording_id = str(
+                    saved["recording_id"].item()
+                )
+                chunk_index = int(
+                    saved["chunk_index"].item()
+                )
+                stored_pipeline_hash = str(
+                    saved["pipeline_hash"].item()
+                )
+                stored_embedding_name = str(
+                    saved["embedding_name"].item()
+                )
+                values = saved["values"]
+                metadata = json.loads(
+                    saved["metadata"].item()
+                )
+
+            if stored_pipeline_hash != pipeline_hash:
+                raise ValueError(
+                    f"Cached pipeline_hash mismatch at {path}"
+                )
+
+            if stored_embedding_name != embedding_name:
+                raise ValueError(
+                    f"Cached embedding_name mismatch at {path}"
+                )
+
+            expected_path = self._get_path(
+                recording_id=recording_id,
+                chunk_index=chunk_index,
+                pipeline_hash=pipeline_hash,
+                embedding_name=embedding_name,
+            )
+
+            if path.resolve() != expected_path.resolve():
+                raise ValueError(
+                    f"Cached embedding is stored at the wrong path: {path}"
+                )
+
+            yield {
+                "recording_id": recording_id,
+                "chunk_index": chunk_index,
+                "values": values,
+                "pipeline_hash": pipeline_hash,
+                "embedding_name": embedding_name,
+                "metadata": metadata,
+            }
+
     def has_embedding(
         self,
         recording_id,
