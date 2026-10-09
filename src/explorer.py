@@ -4,6 +4,9 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from src.ActiveLearningController import ActiveLearningController
+from src.ActiveLearningModel import ActiveLearningModel
+from src.ActiveLearningView import ActiveLearningView
 from src.AudioBufferLoader import AudioBufferLoader
 from src.AudioReader import AudioReader
 from src.CaracalStreamer import CaracalStreamer
@@ -147,6 +150,24 @@ def main():
         definition_store=definition_store,
     )
 
+    active_learning_model = ActiveLearningModel(
+        available_pipelines=tuple(
+            definition.name
+            for definition in pipeline_controller.pipeline_definition_snapshot()
+        )
+    )
+    active_learning_view = ActiveLearningView()
+    active_learning_controller = ActiveLearningController(
+        model=active_learning_model,
+        view=active_learning_view,
+        pipeline_factory=pipeline_factory,
+        pipeline_definitions=pipeline_controller.pipeline_definition_snapshot(),
+        parent=active_learning_view,
+    )
+    pipeline_controller.pipeline_definitions_changed.connect(
+        active_learning_controller.set_pipeline_definitions
+    )
+
     def activate_pipeline_in_explorer(name, selected_pipeline):
         try:
             pipeline_hash = explorer_controller.activate_pipeline(
@@ -171,6 +192,7 @@ def main():
     window = MainWindow(
         explorer_view=explorer_view,
         pipeline_view=pipeline_view,
+        active_learning_view=active_learning_view,
         terminal_view=terminal_view,
     )
 
@@ -179,6 +201,9 @@ def main():
     )
     app.aboutToQuit.connect(
         pipeline_controller.shutdown
+    )
+    app.aboutToQuit.connect(
+        active_learning_controller.shutdown
     )
     app.aboutToQuit.connect(
         terminal_view.shutdown
@@ -191,6 +216,8 @@ def main():
         pipeline_run_model,
         pipeline_runner,
         pipeline_controller,
+        active_learning_model,
+        active_learning_controller,
         terminal_view,
     )
     _ = application_objects

@@ -14,12 +14,13 @@ from src.PipelineView import PipelineView
 
 
 class MainWindow(QMainWindow):
-    """Application shell containing Explorer, Pipelines, and Terminal tabs."""
+    """Application shell containing the application's independent MVC views."""
 
     def __init__(
         self,
         explorer_view: QWidget,
         pipeline_view: QWidget | None = None,
+        active_learning_view: QWidget | None = None,
         terminal_view: QWidget | None = None,
         parent=None,
     ):
@@ -39,6 +40,14 @@ class MainWindow(QMainWindow):
             )
 
         if (
+            active_learning_view is not None
+            and not isinstance(active_learning_view, QWidget)
+        ):
+            raise TypeError(
+                "active_learning_view must be a QWidget or None"
+            )
+
+        if (
             terminal_view is not None
             and not isinstance(terminal_view, QWidget)
         ):
@@ -48,6 +57,7 @@ class MainWindow(QMainWindow):
 
         self.explorer_view = explorer_view
         self.pipeline_view = pipeline_view
+        self.active_learning_view = active_learning_view
         self.terminal_view = terminal_view
 
         self.tabs = QTabWidget()
@@ -59,6 +69,12 @@ class MainWindow(QMainWindow):
             self.pipeline_view,
             "Pipelines",
         )
+
+        if self.active_learning_view is not None:
+            self.tabs.addTab(
+                self.active_learning_view,
+                "Active Learning",
+            )
 
         if self.terminal_view is not None:
             self.tabs.addTab(

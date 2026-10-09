@@ -17,6 +17,7 @@ class PipelineController(QObject):
     """Coordinate pipeline editing, execution, telemetry, and presentation."""
 
     pipeline_activation_ready = Signal(str, object)
+    pipeline_definitions_changed = Signal(object)
 
     def __init__(
         self,
@@ -208,6 +209,7 @@ class PipelineController(QObject):
         self._persisted_user_definitions = persisted
         del self.pipeline_definitions[name]
         self.model.set_available_pipelines(tuple(self.pipeline_definitions))
+        self._emit_pipeline_definitions_changed()
         self.model.error = None
         self._apply_selected_definition()
         self._refresh_pipeline_names()
@@ -485,6 +487,7 @@ class PipelineController(QObject):
         )
         self._apply_selected_definition()
         self._refresh_pipeline_names()
+        self._emit_pipeline_definitions_changed()
         self.refresh_view()
 
     def _replace_selected_definition(self, *, stages):
@@ -497,6 +500,7 @@ class PipelineController(QObject):
         self.pipeline_definitions[definition.name] = replacement
         self.model.error = None
         self._apply_selected_definition()
+        self._emit_pipeline_definitions_changed()
         self.refresh_view()
 
     def _move_stage(self, source_index: int, target_index: int):
@@ -531,6 +535,20 @@ class PipelineController(QObject):
         self.view.set_pipeline_names(
             self.model.available_pipelines,
             self.model.selected_pipeline,
+        )
+
+
+    def pipeline_definition_snapshot(self):
+        """Return detached definitions for other application workflows."""
+
+        return tuple(
+            definition.copy()
+            for definition in self.pipeline_definitions.values()
+        )
+
+    def _emit_pipeline_definitions_changed(self):
+        self.pipeline_definitions_changed.emit(
+            self.pipeline_definition_snapshot()
         )
 
     def _selected_pipeline_is_editable(self) -> bool:
