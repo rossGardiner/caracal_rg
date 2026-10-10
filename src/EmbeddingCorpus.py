@@ -149,6 +149,7 @@ class EmbeddingSource(Protocol):
         self,
         space: EmbeddingSpaceKey,
         batch_size: int,
+        progress_callback=None,
     ) -> Iterator[EmbeddingBatch]:
         ...
 
@@ -243,6 +244,8 @@ class EmbeddingCorpus:
     def iter_batches(
         self,
         batch_size=8192,
+        *,
+        progress_callback=None,
     ):
         """Stream the corpus through RAM in bounded batches.
 
@@ -261,6 +264,7 @@ class EmbeddingCorpus:
         for batch in self._source.iter_batches(
             self.space,
             batch_size,
+            progress_callback=progress_callback,
         ):
             expected_dimension = self._check_dimension(
                 batch,
@@ -274,6 +278,8 @@ class EmbeddingCorpus:
         *,
         seed=None,
         exclude_refs=(),
+        progress_callback=None,
+        progress_interval=128,
     ):
         """Uniformly sample refs using bounded-memory reservoir sampling.
 
@@ -302,11 +308,23 @@ class EmbeddingCorpus:
                 ),
             )
 
+        progress_interval = int(progress_interval)
+        if progress_interval <= 0:
+            raise ValueError("progress_interval must be greater than zero")
+
         rng = random.Random(seed)
         reservoir = []
         seen = 0
+        scanned = 0
 
         for ref in self.iter_refs():
+            scanned += 1
+            if (
+                progress_callback is not None
+                and scanned % progress_interval == 0
+            ):
+                progress_callback(scanned)
+
             if ref in excluded:
                 continue
 
@@ -319,6 +337,9 @@ class EmbeddingCorpus:
             replacement_index = rng.randrange(seen)
             if replacement_index < count:
                 reservoir[replacement_index] = ref
+
+        if progress_callback is not None:
+            progress_callback(scanned)
 
         reservoir.sort()
         return self.load_refs(reservoir)

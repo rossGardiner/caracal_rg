@@ -1,24 +1,31 @@
 """Qt presentation for one active-learning workspace."""
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from src.ActiveLearner import BinaryLabel
+from src.ActiveLearner import ActiveLearningStage, BinaryLabel
 from src.ActiveLearningModel import ActiveLearningModel, ActiveLearningStatus
 
 
 class ActiveLearningView(QWidget):
-    """Passive Qt view for pipeline selection, labelling, and review."""
+    """Passive Qt view for classifier selection, labelling, and review."""
 
+    classifier_selected = Signal(str)
+    new_classifier_requested = Signal()
+    delete_classifier_requested = Signal()
     pipeline_selected = Signal(str)
     prepare_requested = Signal()
     label_positive_requested = Signal()
@@ -26,12 +33,45 @@ class ActiveLearningView(QWidget):
     remove_label_requested = Signal()
     run_round_requested = Signal()
     open_candidate_requested = Signal()
+    label_candidate_positive_requested = Signal()
+    label_candidate_negative_requested = Signal()
     skip_candidate_requested = Signal()
 
-    _PLACEHOLDER = "Select training pipeline…"
+    _CLASSIFIER_PLACEHOLDER = "Select classifier…"
+    _PIPELINE_PLACEHOLDER = "Select training pipeline…"
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        self.classifier_selector = QComboBox()
+        self.classifier_selector.currentIndexChanged.connect(
+            self._emit_classifier_selection
+        )
+        self.new_classifier_button = QPushButton("New")
+        self.delete_classifier_button = QPushButton("Delete")
+        self.new_classifier_button.clicked.connect(
+            self.new_classifier_requested.emit
+        )
+        self.delete_classifier_button.clicked.connect(
+            self.delete_classifier_requested.emit
+        )
+
+        classifier_controls = QHBoxLayout()
+        classifier_controls.addWidget(self.classifier_selector, 1)
+        classifier_controls.addWidget(self.new_classifier_button)
+        classifier_controls.addWidget(self.delete_classifier_button)
+
+        self.bound_pipeline_value = QLabel("—")
+        self.bound_space_value = QLabel("—")
+        self.bound_space_value.setWordWrap(True)
+
+        classifier_group = QGroupBox("Classifier")
+        classifier_layout = QVBoxLayout(classifier_group)
+        classifier_layout.addLayout(classifier_controls)
+        classifier_form = QFormLayout()
+        classifier_form.addRow("Bound pipeline:", self.bound_pipeline_value)
+        classifier_form.addRow("Bound embedding space:", self.bound_space_value)
+        classifier_layout.addLayout(classifier_form)
 
         self.pipeline_selector = QComboBox()
         self.pipeline_selector.currentIndexChanged.connect(
@@ -40,8 +80,8 @@ class ActiveLearningView(QWidget):
 
         self.prepare_button = QPushButton("Use pipeline for active learning")
         self.prepare_button.setToolTip(
-            "Build the selected pipeline, resolve its exact embedding-cache "
-            "identity, and prepare a disk-backed corpus"
+            "Build the selected pipeline, verify the classifier's exact "
+            "embedding-space identity, and prepare a disk-backed corpus"
         )
         self.prepare_button.clicked.connect(self.prepare_requested.emit)
 
@@ -62,7 +102,7 @@ class ActiveLearningView(QWidget):
         self.corpus_value = QLabel()
         self.corpus_value.setWordWrap(True)
 
-        space_group = QGroupBox("Embedding space")
+        space_group = QGroupBox("Prepared embedding space")
         space_layout = QFormLayout(space_group)
         space_layout.addRow("Status:", self.status_value)
         space_layout.addRow("Compatibility hash:", self.pipeline_hash_value)
@@ -103,12 +143,16 @@ class ActiveLearningView(QWidget):
         self.run_round_button.clicked.connect(self.run_round_requested.emit)
         self.round_status_value = QLabel()
         self.round_status_value.setWordWrap(True)
+        self.round_progress_bar = QProgressBar()
+        self.round_progress_bar.setTextVisible(True)
+        self.round_progress_bar.setVisible(False)
 
         learner_group = QGroupBox("Binary classifier")
         learner_layout = QFormLayout(learner_group)
         learner_layout.addRow("Positive labels:", self.positive_count_value)
         learner_layout.addRow("Negative labels:", self.negative_count_value)
         learner_layout.addRow("Round:", self.round_status_value)
+        learner_layout.addRow("Progress:", self.round_progress_bar)
         learner_layout.addRow(self.run_round_button)
 
         self.candidate_position_value = QLabel("—")
@@ -117,9 +161,28 @@ class ActiveLearningView(QWidget):
         self.candidate_reason_value = QLabel("—")
 
         self.open_candidate_button = QPushButton("Open in Explorer")
+        self.candidate_positive_button = QPushButton("Positive")
+        self.candidate_negative_button = QPushButton("Negative")
         self.skip_candidate_button = QPushButton("Skip")
+
+        self.candidate_positive_button.setToolTip(
+            "Label this review candidate positive (P)"
+        )
+        self.candidate_negative_button.setToolTip(
+            "Label this review candidate negative (N)"
+        )
+        self.skip_candidate_button.setToolTip(
+            "Skip this review candidate without adding a label (S)"
+        )
+
         self.open_candidate_button.clicked.connect(
             self.open_candidate_requested.emit
+        )
+        self.candidate_positive_button.clicked.connect(
+            self.label_candidate_positive_requested.emit
+        )
+        self.candidate_negative_button.clicked.connect(
+            self.label_candidate_negative_requested.emit
         )
         self.skip_candidate_button.clicked.connect(
             self.skip_candidate_requested.emit
@@ -127,8 +190,30 @@ class ActiveLearningView(QWidget):
 
         candidate_buttons = QHBoxLayout()
         candidate_buttons.addWidget(self.open_candidate_button)
+        candidate_buttons.addWidget(self.candidate_positive_button)
+        candidate_buttons.addWidget(self.candidate_negative_button)
         candidate_buttons.addWidget(self.skip_candidate_button)
         candidate_buttons.addStretch(1)
+
+        self.candidate_positive_shortcut = QShortcut(QKeySequence("P"), self)
+        self.candidate_negative_shortcut = QShortcut(QKeySequence("N"), self)
+        self.candidate_skip_shortcut = QShortcut(QKeySequence("S"), self)
+        for shortcut in (
+            self.candidate_positive_shortcut,
+            self.candidate_negative_shortcut,
+            self.candidate_skip_shortcut,
+        ):
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+
+        self.candidate_positive_shortcut.activated.connect(
+            self.label_candidate_positive_requested.emit
+        )
+        self.candidate_negative_shortcut.activated.connect(
+            self.label_candidate_negative_requested.emit
+        )
+        self.candidate_skip_shortcut.activated.connect(
+            self.skip_candidate_requested.emit
+        )
 
         candidate_group = QGroupBox("Review candidate")
         candidate_layout = QVBoxLayout(candidate_group)
@@ -144,6 +229,7 @@ class ActiveLearningView(QWidget):
         self.error_value.setWordWrap(True)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(classifier_group)
         layout.addWidget(pipeline_group)
         layout.addWidget(space_group)
         layout.addWidget(explorer_group)
@@ -152,14 +238,64 @@ class ActiveLearningView(QWidget):
         layout.addWidget(self.error_value)
         layout.addStretch(1)
 
-    def set_pipeline_names(
-        self,
-        names: tuple[str, ...],
-        selected_name: str | None,
-    ):
+    def prompt_new_classifier_name(self, existing_names):
+        existing = set(existing_names)
+        while True:
+            name, accepted = QInputDialog.getText(
+                self,
+                "New classifier",
+                "Classifier name:",
+            )
+            if not accepted:
+                return None
+            name = name.strip()
+            if not name:
+                QMessageBox.warning(
+                    self,
+                    "Invalid classifier name",
+                    "Classifier name cannot be empty.",
+                )
+                continue
+            if name in existing:
+                QMessageBox.warning(
+                    self,
+                    "Classifier already exists",
+                    f"A classifier named {name!r} already exists.",
+                )
+                continue
+            return name
+
+    def confirm_delete_classifier(self, name: str):
+        result = QMessageBox.question(
+            self,
+            "Delete classifier",
+            f"Delete classifier {name!r} and its saved model weights?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return result == QMessageBox.Yes
+
+    def set_classifier_definitions(self, definitions, selected_id):
+        self.classifier_selector.blockSignals(True)
+        self.classifier_selector.clear()
+        self.classifier_selector.addItem(self._CLASSIFIER_PLACEHOLDER, None)
+        for definition in definitions:
+            self.classifier_selector.addItem(
+                definition.name,
+                definition.classifier_id,
+            )
+
+        if selected_id is None:
+            self.classifier_selector.setCurrentIndex(0)
+        else:
+            index = self.classifier_selector.findData(selected_id)
+            self.classifier_selector.setCurrentIndex(max(0, index))
+        self.classifier_selector.blockSignals(False)
+
+    def set_pipeline_names(self, names, selected_name):
         self.pipeline_selector.blockSignals(True)
         self.pipeline_selector.clear()
-        self.pipeline_selector.addItem(self._PLACEHOLDER, None)
+        self.pipeline_selector.addItem(self._PIPELINE_PLACEHOLDER, None)
         for name in names:
             self.pipeline_selector.addItem(name, name)
 
@@ -171,12 +307,28 @@ class ActiveLearningView(QWidget):
         self.pipeline_selector.blockSignals(False)
 
     def render(self, model: ActiveLearningModel):
-        """Render current application state without performing domain logic."""
-
+        self.set_classifier_definitions(
+            model.classifier_definitions,
+            model.selected_classifier_id,
+        )
         self.set_pipeline_names(
             model.available_pipelines,
             model.selected_pipeline_name,
         )
+
+        classifier = model.selected_classifier
+        if classifier is None:
+            self.bound_pipeline_value.setText("—")
+            self.bound_space_value.setText("—")
+        else:
+            self.bound_pipeline_value.setText(classifier.pipeline_name or "Not bound")
+            if classifier.embedding_space is None:
+                self.bound_space_value.setText("Not bound")
+            else:
+                self.bound_space_value.setText(
+                    f"{classifier.embedding_space.pipeline_hash} / "
+                    f"{classifier.embedding_space.embedding_name}"
+                )
 
         self.status_value.setText(model.status.value)
 
@@ -195,13 +347,21 @@ class ActiveLearningView(QWidget):
 
         self._render_explorer_state(model)
         self._render_learning_state(model)
+        self._render_round_progress(model)
         self._render_candidate(model)
 
         preparing = model.status is ActiveLearningStatus.PREPARING
         busy = preparing or model.round_running
-        self.pipeline_selector.setEnabled(not busy)
+        has_classifier = classifier is not None
+
+        self.classifier_selector.setEnabled(not busy)
+        self.new_classifier_button.setEnabled(not busy)
+        self.delete_classifier_button.setEnabled(has_classifier and not busy)
+        self.pipeline_selector.setEnabled(has_classifier and not busy)
         self.prepare_button.setEnabled(
-            not busy and model.selected_pipeline_name is not None
+            has_classifier
+            and not busy
+            and model.selected_pipeline_name is not None
         )
         self.prepare_button.setText(
             "Preparing…" if preparing else "Use pipeline for active learning"
@@ -225,16 +385,23 @@ class ActiveLearningView(QWidget):
 
         has_candidate = model.current_candidate is not None and not model.round_running
         self.open_candidate_button.setEnabled(has_candidate)
+        self.candidate_positive_button.setEnabled(has_candidate)
+        self.candidate_negative_button.setEnabled(has_candidate)
         self.skip_candidate_button.setEnabled(has_candidate)
+        self.candidate_positive_shortcut.setEnabled(has_candidate)
+        self.candidate_negative_shortcut.setEnabled(has_candidate)
+        self.candidate_skip_shortcut.setEnabled(has_candidate)
 
         messages = [message for message in (model.error, model.round_error) if message]
         self.error_value.setText("\n".join(messages))
 
     def _render_explorer_state(self, model: ActiveLearningModel):
-        if model.explorer_embedding_space is None:
+        if model.selected_classifier is None:
+            self.explorer_space_value.setText("Select a classifier")
+        elif model.explorer_embedding_space is None:
             self.explorer_space_value.setText("No Explorer embedding space")
         elif model.embedding_space is None:
-            self.explorer_space_value.setText("Prepare a training pipeline")
+            self.explorer_space_value.setText("Prepare the classifier's pipeline")
         elif model.explorer_is_compatible:
             self.explorer_space_value.setText("Compatible")
         else:
@@ -264,8 +431,22 @@ class ActiveLearningView(QWidget):
         self.positive_count_value.setText(str(model.positive_label_count))
         self.negative_count_value.setText(str(model.negative_label_count))
 
-        if model.round_running:
-            text = "Training classifier and streaming the corpus…"
+        if model.selected_classifier is None:
+            text = "Create or select a classifier first."
+        elif model.round_running:
+            progress = model.round_progress
+            if progress is None:
+                text = "Starting active-learning round…"
+            elif progress.stage is ActiveLearningStage.TRAINING:
+                text = (
+                    f"{progress.stage.value}… "
+                    f"epoch {progress.completed} / {progress.total}"
+                )
+            else:
+                text = (
+                    f"{progress.stage.value}… "
+                    f"{progress.completed:,} embeddings scanned"
+                )
         elif model.last_round_result is not None:
             result = model.last_round_result
             text = (
@@ -276,9 +457,25 @@ class ActiveLearningView(QWidget):
         elif model.is_ready:
             text = "Add a positive seed, then run a learning round."
         else:
-            text = "Prepare an embedding space first."
+            text = "Select and prepare the classifier's embedding pipeline."
 
         self.round_status_value.setText(text)
+
+    def _render_round_progress(self, model: ActiveLearningModel):
+        progress = model.round_progress
+        if not model.round_running:
+            self.round_progress_bar.setVisible(False)
+            return
+
+        self.round_progress_bar.setVisible(True)
+        if progress is None or progress.total is None:
+            self.round_progress_bar.setRange(0, 0)
+            self.round_progress_bar.setFormat("Working…")
+            return
+
+        self.round_progress_bar.setRange(0, progress.total)
+        self.round_progress_bar.setValue(progress.completed)
+        self.round_progress_bar.setFormat("%v / %m")
 
     def _render_candidate(self, model: ActiveLearningModel):
         candidate = model.current_candidate
@@ -289,7 +486,9 @@ class ActiveLearningView(QWidget):
                 self.candidate_position_value.setText(
                     f"Complete · {len(model.review_queue)} reviewed/skipped"
                 )
-                self.candidate_ref_value.setText("Run another round for fresh candidates")
+                self.candidate_ref_value.setText(
+                    "Run another round for fresh candidates"
+                )
             else:
                 self.candidate_position_value.setText("—")
                 self.candidate_ref_value.setText("—")
@@ -304,6 +503,12 @@ class ActiveLearningView(QWidget):
         )
         self.candidate_probability_value.setText(f"{candidate.probability:.3f}")
         self.candidate_reason_value.setText(candidate.reason.value.replace("_", " "))
+
+    def _emit_classifier_selection(self, index: int):
+        classifier_id = self.classifier_selector.itemData(index)
+        self.classifier_selected.emit(
+            "" if classifier_id is None else str(classifier_id)
+        )
 
     def _emit_pipeline_selection(self, index: int):
         name = self.pipeline_selector.itemData(index)

@@ -179,10 +179,100 @@ class BinaryEmbeddingClassifier:
     def training_result(self):
         return self._training_result
 
+    def export_state(self):
+        """Return a CPU-only fitted state suitable for persistent storage."""
+
+        if not self.is_fitted:
+            return None
+
+        training_result = None
+        if self._training_result is not None:
+            training_result = {
+                "embedding_dimension": self._training_result.embedding_dimension,
+                "positive_count": self._training_result.positive_count,
+                "available_negative_count": (
+                    self._training_result.available_negative_count
+                ),
+                "training_negative_count": (
+                    self._training_result.training_negative_count
+                ),
+                "final_loss": self._training_result.final_loss,
+            }
+
+        return {
+            "embedding_dimension": self._embedding_dimension,
+            "model_state": {
+                name: tensor.detach().cpu()
+                for name, tensor in self._model.state_dict().items()
+            },
+            "training_result": training_result,
+        }
+
+    def restore_state(self, state):
+        """Restore a state previously produced by :meth:`export_state`."""
+
+        if state is None:
+            return
+        if not isinstance(state, dict):
+            raise TypeError("classifier state must be a dictionary")
+
+        try:
+            embedding_dimension = int(state["embedding_dimension"])
+            model_state = state["model_state"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Invalid classifier state") from exc
+
+        if embedding_dimension <= 0:
+            raise ValueError("Stored embedding dimension must be greater than zero")
+        if not isinstance(model_state, dict):
+            raise ValueError("Stored model_state must be a dictionary")
+
+        model = _EmbeddingBinaryNetwork(
+            embedding_dimension=embedding_dimension,
+            hidden_dimension=self.parameters.hidden_dimension,
+        )
+        model.load_state_dict(model_state, strict=True)
+        model.eval()
+
+        training_payload = state.get("training_result")
+        if training_payload is None:
+            training_result = None
+        else:
+            if not isinstance(training_payload, dict):
+                raise ValueError("Stored training_result must be a dictionary")
+            try:
+                training_result = BinaryClassifierTrainingResult(
+                    embedding_dimension=int(
+                        training_payload["embedding_dimension"]
+                    ),
+                    positive_count=int(training_payload["positive_count"]),
+                    available_negative_count=int(
+                        training_payload["available_negative_count"]
+                    ),
+                    training_negative_count=int(
+                        training_payload["training_negative_count"]
+                    ),
+                    final_loss=float(training_payload["final_loss"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Invalid stored training result") from exc
+
+            if training_result.embedding_dimension != embedding_dimension:
+                raise ValueError(
+                    "Stored training result and model use different embedding "
+                    "dimensions"
+                )
+
+        self._model = model
+        self._embedding_dimension = embedding_dimension
+        self._training_result = training_result
+
     def fit(
         self,
         positive_vectors,
         negative_vectors,
+        *,
+        progress_callback=None,
     ):
         """Train from positive and negative embedding matrices.
 
@@ -331,6 +421,11 @@ class BinaryEmbeddingClassifier:
                 )
 
             final_loss = epoch_loss / sample_count
+            if progress_callback is not None:
+                progress_callback(
+                    _ + 1,
+                    self.parameters.epochs,
+                )
 
         model.eval()
 

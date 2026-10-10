@@ -102,6 +102,7 @@ class CachedEmbeddingSource:
         self,
         space: EmbeddingSpaceKey,
         batch_size,
+        progress_callback=None,
     ):
         """Stream cache files directly into fixed-size matrices.
 
@@ -121,6 +122,8 @@ class CachedEmbeddingSource:
         vectors = None
         row_index = 0
         expected_dimension = None
+        scanned_count = 0
+        progress_interval = 128
 
         for embedding in self.cache.iter_embeddings(
             pipeline_hash=space.pipeline_hash,
@@ -156,6 +159,13 @@ class CachedEmbeddingSource:
             refs.append(ref)
             vectors[row_index] = vector
             row_index += 1
+            scanned_count += 1
+
+            if (
+                progress_callback is not None
+                and scanned_count % progress_interval == 0
+            ):
+                progress_callback(scanned_count)
 
             if row_index < batch_size:
                 continue
@@ -174,6 +184,9 @@ class CachedEmbeddingSource:
                 refs=tuple(refs),
                 vectors=vectors[:row_index],
             )
+
+        if progress_callback is not None:
+            progress_callback(scanned_count)
 
     def _load_vector(
         self,

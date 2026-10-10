@@ -1,4 +1,5 @@
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -26,6 +27,7 @@ class LatestJobRunner(QObject):
 
     ready = Signal(int, object)
     failed = Signal(int, str)
+    progress = Signal(int, object)
 
     def __init__(self, name="background-job", parent=None):
         super().__init__(parent)
@@ -56,6 +58,23 @@ class LatestJobRunner(QObject):
 
             self._pending_request = request
             self._condition.notify()
+
+    def report_progress(self, request_id: int, payload):
+        """Emit progress for currently relevant work from the worker thread.
+
+        Jobs can receive this method as a plain callback.  The runner keeps
+        Qt signalling out of synchronous domain services and discards stale
+        progress in the same way it discards stale results.  ``sleep(0)`` is
+        a cooperative yield so long Python-heavy scans do not monopolise the
+        interpreter between progress heartbeats.
+        """
+
+        request_id = int(request_id)
+        if self._is_stopping() or self._has_newer_request(request_id):
+            return
+
+        self.progress.emit(request_id, payload)
+        time.sleep(0)
 
     def shutdown(self):
         """Stop accepting work and discard any request not yet started."""

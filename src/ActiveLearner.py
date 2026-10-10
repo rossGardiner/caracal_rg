@@ -28,6 +28,45 @@ class ReviewReason(Enum):
     RANDOM = "random"
 
 
+class ActiveLearningStage(Enum):
+    """Coarse stages reported while one active-learning round is running."""
+
+    SAMPLING_NEGATIVES = "Sampling bootstrap negatives"
+    TRAINING = "Training classifier"
+    SCORING = "Scoring corpus"
+
+
+@dataclass(frozen=True)
+class ActiveLearningProgress:
+    """Progress heartbeat for one synchronous active-learning round.
+
+    ``total`` is only supplied when the operation has a cheap, meaningful
+    total (classifier epochs).  Corpus scans deliberately remain indeterminate
+    so reporting progress never causes a second full scan just to count items.
+    """
+
+    stage: ActiveLearningStage
+    completed: int = 0
+    total: Optional[int] = None
+
+    def __post_init__(self):
+        if not isinstance(self.stage, ActiveLearningStage):
+            raise TypeError("stage must be an ActiveLearningStage")
+
+        completed = int(self.completed)
+        if completed < 0:
+            raise ValueError("completed cannot be negative")
+        object.__setattr__(self, "completed", completed)
+
+        if self.total is not None:
+            total = int(self.total)
+            if total <= 0:
+                raise ValueError("total must be greater than zero when set")
+            if completed > total:
+                raise ValueError("completed cannot exceed total")
+            object.__setattr__(self, "total", total)
+
+
 @dataclass(frozen=True)
 class ActiveLearningParameters:
     """Configuration for corpus scoring and review selection."""
@@ -188,8 +227,14 @@ class ActiveLearner:
         self._labels.pop(ref, None)
         self._last_result = None
 
-    def run_round(self):
-        """Train from current labels and produce a fresh review queue."""
+    def run_round(self, progress_callback=None):
+        """Train from current labels and produce a fresh review queue.
+
+        ``progress_callback`` is optional and receives
+        :class:`ActiveLearningProgress` values.  It is intentionally a plain
+        callable rather than a Qt signal so this domain service remains usable
+        outside the GUI.
+        """
 
         positive_refs = tuple(sorted(self.positive_refs))
         if not positive_refs:
@@ -199,7 +244,8 @@ class ActiveLearner:
             )
 
         negative_refs, bootstrap_batch = self._training_negatives(
-            positive_count=len(positive_refs)
+            positive_count=len(positive_refs),
+            progress_callback=progress_callback,
         )
         positive_batch = self.corpus.load_refs(positive_refs)
         human_negative_batch = self.corpus.load_refs(negative_refs)
@@ -213,11 +259,25 @@ class ActiveLearner:
                 "No negative embeddings are available for classifier training"
             )
 
+        self._emit_progress(
+            progress_callback,
+            ActiveLearningStage.TRAINING,
+            completed=0,
+            total=self.classifier.parameters.epochs,
+        )
         training = self.classifier.fit(
             positive_batch.vectors,
             negative_vectors,
+            progress_callback=lambda completed, total: self._emit_progress(
+                progress_callback,
+                ActiveLearningStage.TRAINING,
+                completed=completed,
+                total=total,
+            ),
         )
-        review_queue, scored_count = self._score_corpus()
+        review_queue, scored_count = self._score_corpus(
+            progress_callback=progress_callback
+        )
 
         self._last_result = ActiveLearningRoundResult(
             training=training,
@@ -227,7 +287,7 @@ class ActiveLearner:
         )
         return self._last_result
 
-    def _training_negatives(self, positive_count):
+    def _training_negatives(self, positive_count, progress_callback=None):
         desired_count = (
             positive_count
             * self.classifier.parameters.negative_to_positive_ratio
@@ -239,19 +299,47 @@ class ActiveLearner:
             human_refs = sorted(rng.sample(human_refs, desired_count))
 
         bootstrap_count = max(0, desired_count - len(human_refs))
+
+        if bootstrap_count > 0:
+            self._emit_progress(
+                progress_callback,
+                ActiveLearningStage.SAMPLING_NEGATIVES,
+                completed=0,
+            )
+
         bootstrap_batch = self.corpus.sample(
             bootstrap_count,
             seed=self.parameters.random_seed,
             exclude_refs=self.labelled_refs,
+            progress_callback=(
+                None
+                if bootstrap_count == 0
+                else lambda scanned: self._emit_progress(
+                    progress_callback,
+                    ActiveLearningStage.SAMPLING_NEGATIVES,
+                    completed=scanned,
+                )
+            ),
         )
         return tuple(human_refs), bootstrap_batch
 
-    def _score_corpus(self):
+    def _score_corpus(self, progress_callback=None):
         selector = _ReviewSelector(self.parameters)
         labelled = self.labelled_refs
 
+        self._emit_progress(
+            progress_callback,
+            ActiveLearningStage.SCORING,
+            completed=0,
+        )
+
         for batch in self.corpus.iter_batches(
-            batch_size=self.parameters.scoring_batch_size
+            batch_size=self.parameters.scoring_batch_size,
+            progress_callback=lambda scanned: self._emit_progress(
+                progress_callback,
+                ActiveLearningStage.SCORING,
+                completed=scanned,
+            ),
         ):
             probabilities = self.classifier.predict_proba(batch.vectors)
             for ref, probability in zip(batch.refs, probabilities):
@@ -259,6 +347,18 @@ class ActiveLearner:
                     selector.add(ref, float(probability))
 
         return selector.build_queue(), selector.seen_count
+
+    @staticmethod
+    def _emit_progress(callback, stage, *, completed, total=None):
+        if callback is None:
+            return
+        callback(
+            ActiveLearningProgress(
+                stage=stage,
+                completed=completed,
+                total=total,
+            )
+        )
 
     def _refs_with_label(self, target):
         return frozenset(

@@ -323,8 +323,8 @@ class EmbeddingCache:
         if not space_directory.is_dir():
             return
 
-        for path in sorted(
-            space_directory.glob("*/*.npz")
+        for path in self._iter_space_embedding_paths(
+            space_directory
         ):
             with np.load(
                 path,
@@ -396,8 +396,8 @@ class EmbeddingCache:
         if not space_directory.is_dir():
             return
 
-        for path in sorted(
-            space_directory.glob("*/*.npz")
+        for path in self._iter_space_embedding_paths(
+            space_directory
         ):
             with np.load(
                 path,
@@ -467,6 +467,27 @@ class EmbeddingCache:
 
         return path.is_file()
     
+    @staticmethod
+    def _iter_space_embedding_paths(space_directory):
+        """Yield cache files deterministically without listing the whole corpus.
+
+        Sorting every ``*/*.npz`` path at once creates a potentially enormous
+        temporary list before a large corpus scan can even begin.  Sorting the
+        recording directories and then each recording's chunk files preserves
+        the same deterministic path order while keeping path memory bounded to
+        one recording at a time.
+        """
+
+        recording_directories = sorted(
+            path
+            for path in space_directory.iterdir()
+            if path.is_dir()
+        )
+        for recording_directory in recording_directories:
+            yield from sorted(
+                recording_directory.glob("*.npz")
+            )
+
     @staticmethod
     def _safe_filename(value):
         allowed = {

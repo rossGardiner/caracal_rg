@@ -4,6 +4,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from src.ActiveLearningClassifierStore import ActiveLearningClassifierStore
 from src.ActiveLearningController import ActiveLearningController
 from src.ActiveLearningModel import ActiveLearningModel
 from src.ActiveLearningView import ActiveLearningView
@@ -80,6 +81,17 @@ def main():
         tuple(builtin_pipeline_definitions)
         + user_pipeline_definitions
     )
+    classifier_store = ActiveLearningClassifierStore()
+    try:
+        classifier_definitions = classifier_store.load()
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        print(
+            f"Could not load saved active-learning classifiers from "
+            f"{classifier_store.path}: {exc}",
+            file=sys.stderr,
+        )
+        classifier_definitions = ()
+
     pipeline = pipeline_factory.build(
         builtin_pipeline_definitions[0]
     )
@@ -154,7 +166,8 @@ def main():
         available_pipelines=tuple(
             definition.name
             for definition in pipeline_controller.pipeline_definition_snapshot()
-        )
+        ),
+        classifier_definitions=classifier_definitions,
     )
     active_learning_view = ActiveLearningView()
     active_learning_controller = ActiveLearningController(
@@ -162,6 +175,7 @@ def main():
         view=active_learning_view,
         pipeline_factory=pipeline_factory,
         pipeline_definitions=pipeline_controller.pipeline_definition_snapshot(),
+        classifier_store=classifier_store,
         parent=active_learning_view,
     )
     pipeline_controller.pipeline_definitions_changed.connect(
