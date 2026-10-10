@@ -295,6 +295,29 @@ class BrowsingView(QWidget):
             selector_index
         )
 
+    def set_recording_selection(self, packet_index):
+        """Synchronize the selector without emitting a new navigation event."""
+
+        packet_index = int(packet_index)
+        selector_index = self.recording_selector.findData(packet_index)
+        if selector_index < 0:
+            raise ValueError(f"Unknown recording packet index: {packet_index}")
+
+        self.recording_selector.blockSignals(True)
+        self.recording_selector.setCurrentIndex(selector_index)
+        self.recording_selector.blockSignals(False)
+
+    def set_chunk_selection(self, chunk_index):
+        """Synchronize the chunk slider without emitting selection."""
+
+        chunk_index = int(chunk_index)
+        if not self.chunk_slider.minimum() <= chunk_index <= self.chunk_slider.maximum():
+            raise ValueError(f"Chunk index outside current range: {chunk_index}")
+
+        self.chunk_slider.blockSignals(True)
+        self.chunk_slider.setValue(chunk_index)
+        self.chunk_slider.blockSignals(False)
+
     def set_chunk_range(
         self,
         chunk_count,

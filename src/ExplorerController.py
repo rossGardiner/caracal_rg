@@ -8,6 +8,7 @@ from src.CaracalStreamer import CaracalStreamer
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.EmbeddingRequest import EmbeddingRequest
 from src.EmbeddingsCreator import EmbeddingsCreator
+from src.EmbeddingCorpus import EmbeddingRef, EmbeddingSpaceKey
 from src.ExplorerModel import ExplorerModel
 from src.LatestJobRunner import LatestJobRunner
 from src.SpectrogramData import calculate_spectrogram
@@ -23,6 +24,7 @@ class ExplorerController(QObject):
     status_changed = Signal(str)
     stop_browsing_playback_requested = Signal()
     stop_processed_playback_requested = Signal()
+    embedding_selection_changed = Signal(object, object)
 
     def __init__(
         self,
@@ -322,8 +324,85 @@ class ExplorerController(QObject):
 
     @Slot(int)
     def recording_selected(self, packet_index: int):
-        """Select a logical recording and request its initial explorer state."""
+        """Select a logical recording and request its first canonical chunk."""
 
+        self._select_recording(
+            packet_index,
+            chunk_index=0,
+            update_view_selection=False,
+        )
+
+    @Slot(object)
+    def navigate_to_embedding(self, ref):
+        """Navigate Explorer to one recording/chunk reference.
+
+        The composition root uses this as the bridge from Active Learning.
+        Explorer remains responsible for translating the stable embedding ref
+        into its own packet/chunk selection and loading the corresponding audio.
+        """
+
+        if not isinstance(ref, EmbeddingRef):
+            self.status_changed.emit("Could not open Active Learning candidate: invalid ref")
+            return False
+
+        packet_index = None
+        for index, packet in enumerate(self.model.audio_packets):
+            if str(packet.recording_id) == ref.recording_id:
+                packet_index = index
+                break
+
+        if packet_index is None:
+            self.status_changed.emit(
+                f"Could not open Active Learning candidate: recording "
+                f"{ref.recording_id!r} is not available in Explorer"
+            )
+            return False
+
+        packet = self.model.audio_packets[packet_index]
+        if packet.duration is None:
+            self.status_changed.emit(
+                "Could not open Active Learning candidate: recording has no duration"
+            )
+            return False
+
+        chunk_count = self.model.chunk_grid.chunk_count(packet.duration)
+        if not 0 <= ref.chunk_index < chunk_count:
+            self.status_changed.emit(
+                f"Could not open Active Learning candidate: chunk "
+                f"{ref.chunk_index} is outside the recording"
+            )
+            return False
+
+        self._select_recording(
+            packet_index,
+            chunk_index=ref.chunk_index,
+            update_view_selection=True,
+        )
+        return True
+
+    def current_embedding_selection(self):
+        """Return the Explorer's current embedding space and selected chunk."""
+
+        space = EmbeddingSpaceKey(
+            pipeline_hash=self.model.pipeline_hash,
+            embedding_name=self.model.embedding_name,
+        )
+
+        if self.model.selected_recording_id is None:
+            return space, None
+
+        return space, EmbeddingRef(
+            recording_id=self.model.selected_recording_id,
+            chunk_index=self.model.current_chunk_index,
+        )
+
+    def _select_recording(
+        self,
+        packet_index: int,
+        *,
+        chunk_index: int,
+        update_view_selection: bool,
+    ):
         if (
             packet_index < 0
             or packet_index >= len(self.model.audio_packets)
@@ -333,41 +412,46 @@ class ExplorerController(QObject):
 
         packet = self.model.audio_packets[packet_index]
 
+        if packet.duration is None:
+            raise ValueError(
+                "Selected AudioPacket has no duration"
+            )
+
+        chunk_count = self.model.chunk_grid.chunk_count(packet.duration)
+        if chunk_count <= 0:
+            raise ValueError(
+                "Selected AudioPacket has no canonical chunks"
+            )
+
+        chunk_index = int(chunk_index)
+        if not 0 <= chunk_index < chunk_count:
+            raise ValueError(
+                f"Chunk index {chunk_index} is outside 0..{chunk_count - 1}"
+            )
+
         self.model.current_audio_packet = packet
-        self.model.current_chunk_index = 0
+        self.model.current_chunk_index = chunk_index
+        self.model.current_num_chunks = chunk_count
         self.model.interactive_embeddings_by_key.clear()
 
         self.view.set_selected_embedding_status(
             "Selected chunk embedding: waiting for source audio..."
         )
 
-        if packet.duration is None:
-            raise ValueError(
-                "Selected AudioPacket has no duration"
-            )
-
         self.model.set_recording_navigation(
             duration_s=packet.duration,
             cursor_time_s=0.0,
         )
 
-        self.model.current_num_chunks = (
-            self.model.chunk_grid.chunk_count(
-                packet.duration
-            )
-        )
+        if update_view_selection:
+            self.view.set_recording_selection(packet_index)
 
-        if self.model.current_num_chunks <= 0:
-            raise ValueError(
-                "Selected AudioPacket has no canonical chunks"
-            )
-
-        self.view.set_chunk_range(
-            self.model.current_num_chunks
-        )
+        self.view.set_chunk_range(self.model.current_num_chunks)
+        self.view.set_chunk_selection(chunk_index)
 
         self._request_cached_embeddings()
         self._update_chunk_label()
+        self._emit_embedding_selection()
         self._request_selected_chunk()
 
     def _clear_recording_selection(self):
@@ -401,15 +485,21 @@ class ExplorerController(QObject):
             "No recording selected"
         )
         self.view.clear_browsing_spectrogram()
+        self._emit_embedding_selection()
 
     @Slot(int)
     def chunk_selected(self, chunk_index: int):
         if self.model.current_audio_packet is None:
             return
 
-        self.model.current_chunk_index = int(chunk_index)
+        chunk_index = int(chunk_index)
+        if not 0 <= chunk_index < self.model.current_num_chunks:
+            return
+
+        self.model.current_chunk_index = chunk_index
 
         self._update_chunk_label()
+        self._emit_embedding_selection()
         self._request_selected_chunk()
 
     def _request_selected_chunk(self):
@@ -774,6 +864,10 @@ class ExplorerController(QObject):
     # ======================================================
     # Cleanup
     # ======================================================
+
+    def _emit_embedding_selection(self):
+        space, ref = self.current_embedding_selection()
+        self.embedding_selection_changed.emit(space, ref)
 
     def shutdown(self):
         if self._is_shutdown:

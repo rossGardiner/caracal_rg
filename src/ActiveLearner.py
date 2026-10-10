@@ -158,6 +158,13 @@ class ActiveLearner:
     def last_result(self):
         return self._last_result
 
+    def label_for(self, ref: EmbeddingRef):
+        """Return the human label for one ref, or ``None`` if unlabelled."""
+
+        if not isinstance(ref, EmbeddingRef):
+            raise TypeError("ref must be an EmbeddingRef")
+        return self._labels.get(ref)
+
     def label(self, ref: EmbeddingRef, label: BinaryLabel):
         """Set or replace the human label for one embedding."""
 

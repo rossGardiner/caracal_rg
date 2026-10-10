@@ -3,14 +3,18 @@
 from dataclasses import dataclass
 from functools import partial
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, Signal, Slot
 
-from src.ActiveLearner import ActiveLearner
+from src.ActiveLearner import (
+    ActiveLearner,
+    ActiveLearningRoundResult,
+    BinaryLabel,
+)
 from src.ActiveLearningModel import ActiveLearningModel, ActiveLearningStatus
 from src.ActiveLearningView import ActiveLearningView
 from src.BinaryEmbeddingClassifier import BinaryEmbeddingClassifier
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
-from src.EmbeddingCorpus import EmbeddingSpaceKey
+from src.EmbeddingCorpus import EmbeddingRef, EmbeddingSpaceKey
 from src.EmbeddingCorpusLoader import EmbeddingCorpusLoader
 from src.EmbeddingsCreator import EmbeddingsCreator
 from src.LatestJobRunner import LatestJobRunner
@@ -30,18 +34,23 @@ class _PreparedContext:
 
 
 class ActiveLearningController(QObject):
-    """Resolve pipeline definitions into active-learning domain objects.
+    """Coordinate the Active Learning MVC loop.
 
     Responsibilities:
       * require an explicit user-selected training pipeline;
-      * build a detached runtime pipeline away from the Qt thread;
-      * derive the actual cache compatibility hash and embedding name;
-      * construct a disk-backed ``EmbeddingCorpus`` over that exact space;
-      * create the single binary ``ActiveLearner`` used by the MVP;
-      * keep presentation state synchronized with pipeline-definition edits.
+      * resolve that definition to one exact ``EmbeddingSpaceKey``;
+      * track which Explorer chunk is currently visible and whether it belongs
+        to the classifier's embedding space;
+      * apply human positive/negative labels to the learner;
+      * run train/score/select rounds away from the Qt thread;
+      * expose one bounded review queue to the view;
+      * request Explorer navigation without depending on ExplorerController.
 
-    Labelling and Explorer navigation are intentionally left for AL5.
+    The controller never performs audio playback and never directly accesses
+    Qt widgets outside ``ActiveLearningView``.
     """
+
+    open_example_requested = Signal(object)
 
     def __init__(
         self,
@@ -59,6 +68,8 @@ class ActiveLearningController(QObject):
         self.pipeline_factory = pipeline_factory
         self._definitions = {}
         self._prepare_request_id = 0
+        self._round_request_id = 0
+        self._round_learner = None
 
         self.prepare_jobs = LatestJobRunner(
             name="active-learning-prepare-jobs",
@@ -67,8 +78,21 @@ class ActiveLearningController(QObject):
         self.prepare_jobs.ready.connect(self._prepare_ready)
         self.prepare_jobs.failed.connect(self._prepare_failed)
 
+        self.round_jobs = LatestJobRunner(
+            name="active-learning-round-jobs",
+            parent=self,
+        )
+        self.round_jobs.ready.connect(self._round_ready)
+        self.round_jobs.failed.connect(self._round_failed)
+
         self.view.pipeline_selected.connect(self.select_pipeline)
         self.view.prepare_requested.connect(self.prepare_selected_pipeline)
+        self.view.label_positive_requested.connect(self.label_current_positive)
+        self.view.label_negative_requested.connect(self.label_current_negative)
+        self.view.remove_label_requested.connect(self.remove_current_label)
+        self.view.run_round_requested.connect(self.run_round)
+        self.view.open_candidate_requested.connect(self.open_current_candidate)
+        self.view.skip_candidate_requested.connect(self.skip_current_candidate)
 
         self.set_pipeline_definitions(pipeline_definitions)
 
@@ -108,14 +132,20 @@ class ActiveLearningController(QObject):
         )
 
         if selected_changed and self.model.selected_pipeline_name is not None:
-            # A definition edited in the Pipelines tab no longer matches a
-            # previously prepared embedding space.  Force explicit preparation
-            # again before any training can occur.
             self._invalidate_pending_prepare()
+            self._invalidate_pending_round()
             self.model.clear_prepared_context()
             self.model.status = ActiveLearningStatus.SELECTED
             self.model.error = None
 
+        self.refresh_view()
+
+    @Slot(object, object)
+    def set_explorer_selection(self, embedding_space, ref):
+        """Receive the Explorer's current embedding-space/chunk selection."""
+
+        self.model.set_explorer_selection(embedding_space, ref)
+        self.model.skip_labelled_candidates()
         self.refresh_view()
 
     @Slot(str)
@@ -123,6 +153,7 @@ class ActiveLearningController(QObject):
         """Select a training definition, but do not prepare it implicitly."""
 
         self._invalidate_pending_prepare()
+        self._invalidate_pending_round()
 
         if not name:
             self.model.clear_selection()
@@ -155,6 +186,7 @@ class ActiveLearningController(QObject):
             self.refresh_view()
             return
 
+        self._invalidate_pending_round()
         self._prepare_request_id += 1
         request_id = self._prepare_request_id
         self.model.clear_prepared_context()
@@ -169,6 +201,68 @@ class ActiveLearningController(QObject):
                 definition,
             ),
         )
+
+    @Slot()
+    def label_current_positive(self):
+        self._label_current(BinaryLabel.POSITIVE)
+
+    @Slot()
+    def label_current_negative(self):
+        self._label_current(BinaryLabel.NEGATIVE)
+
+    @Slot()
+    def remove_current_label(self):
+        if not self._require_labelable_explorer_ref():
+            return
+
+        ref = self.model.explorer_ref
+        self.model.learner.remove_label(ref)
+        self.model.skip_labelled_candidates()
+        self.refresh_view()
+
+    @Slot()
+    def run_round(self):
+        """Train, stream-score the corpus, and build a fresh review queue."""
+
+        if not self.model.is_ready:
+            self.model.round_error = (
+                "Prepare a training pipeline before running active learning"
+            )
+            self.refresh_view()
+            return
+
+        if self.model.positive_label_count == 0:
+            self.model.round_error = (
+                "Add at least one positive example before running a round"
+            )
+            self.refresh_view()
+            return
+
+        learner = self.model.learner
+        self._round_request_id += 1
+        request_id = self._round_request_id
+        self._round_learner = learner
+        self.model.start_round()
+        self.refresh_view()
+
+        self.round_jobs.submit(
+            request_id,
+            learner.run_round,
+        )
+
+    @Slot()
+    def open_current_candidate(self):
+        candidate = self.model.current_candidate
+        if candidate is None:
+            return
+        self.open_example_requested.emit(candidate.ref)
+
+    @Slot()
+    def skip_current_candidate(self):
+        if self.model.round_running:
+            return
+        self.model.advance_candidate()
+        self.refresh_view()
 
     @Slot(int, object)
     def _prepare_ready(self, request_id: int, prepared):
@@ -203,6 +297,80 @@ class ActiveLearningController(QObject):
         )
         self.refresh_view()
 
+    @Slot(int, object)
+    def _round_ready(self, request_id: int, result):
+        if request_id != self._round_request_id:
+            return
+
+        if self.model.learner is not self._round_learner:
+            return
+
+        if not isinstance(result, ActiveLearningRoundResult):
+            self.model.set_round_failed(
+                "Active learning returned an invalid round result"
+            )
+            self.refresh_view()
+            return
+
+        self.model.set_round_result(result)
+        self.refresh_view()
+
+    @Slot(int, str)
+    def _round_failed(self, request_id: int, message: str):
+        if request_id != self._round_request_id:
+            return
+
+        if self.model.learner is not self._round_learner:
+            return
+
+        self.model.set_round_failed(
+            f"Could not run active learning: {message}"
+        )
+        self.refresh_view()
+
+    def _label_current(self, label: BinaryLabel):
+        if not self._require_labelable_explorer_ref():
+            return
+
+        ref = self.model.explorer_ref
+        current_candidate = self.model.current_candidate
+
+        self.model.learner.label(ref, label)
+
+        if current_candidate is not None and current_candidate.ref == ref:
+            self.model.advance_candidate()
+        else:
+            self.model.skip_labelled_candidates()
+
+        self.model.round_error = None
+        self.refresh_view()
+
+    def _require_labelable_explorer_ref(self):
+        if self.model.round_running:
+            return False
+
+        if not self.model.is_ready:
+            self.model.round_error = (
+                "Prepare a training pipeline before labelling examples"
+            )
+            self.refresh_view()
+            return False
+
+        if self.model.explorer_ref is None:
+            self.model.round_error = "Select a chunk in Explorer first"
+            self.refresh_view()
+            return False
+
+        if not self.model.explorer_is_compatible:
+            self.model.round_error = (
+                "Explorer is using a different embedding space. Activate the "
+                "same pipeline in Explorer before labelling this chunk."
+            )
+            self.refresh_view()
+            return False
+
+        return True
+
     def _prepare_definition(self, definition: PipelineDefinition):
         pipeline = self.pipeline_factory.build(definition)
 
@@ -221,12 +389,6 @@ class ActiveLearningController(QObject):
                 "EmbeddingsCreator"
             )
 
-        # Cache persistence is keyed by the EmbeddingsCreator's recursive
-        # configuration hash.  For a normal embedding pipeline this is also
-        # the complete runtime hash because downstream cache/observer links are
-        # excluded from configuration.  Reject surprising definitions rather
-        # than presenting a different pipeline hash to the user than the cache
-        # actually uses.
         embedding_hash = embeddings_creator.get_config_hash()
         pipeline_hash = pipeline.get_config_hash()
         if embedding_hash != pipeline_hash:
@@ -254,12 +416,16 @@ class ActiveLearningController(QObject):
         )
 
     def _invalidate_pending_prepare(self):
-        # LatestJobRunner cannot interrupt a build already in progress, so the
-        # request id is the authoritative stale-result guard.
         self._prepare_request_id += 1
+
+    def _invalidate_pending_round(self):
+        self._round_request_id += 1
+        self._round_learner = None
+        self.model.round_running = False
 
     def refresh_view(self):
         self.view.render(self.model)
 
     def shutdown(self):
         self.prepare_jobs.shutdown()
+        self.round_jobs.shutdown()

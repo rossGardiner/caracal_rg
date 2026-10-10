@@ -270,6 +270,12 @@ class ExplorerView(QMainWindow):
             selected_packet_index=selected_packet_index,
         )
 
+    def set_recording_selection(self, packet_index: int):
+        self.browsing_view.set_recording_selection(packet_index)
+
+    def set_chunk_selection(self, chunk_index: int):
+        self.browsing_view.set_chunk_selection(chunk_index)
+
     def set_embedding_name(self, embedding_name: str):
         self.processed_view.set_embedding_name(embedding_name)
 

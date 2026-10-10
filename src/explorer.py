@@ -168,6 +168,17 @@ def main():
         active_learning_controller.set_pipeline_definitions
     )
 
+    explorer_controller.embedding_selection_changed.connect(
+        active_learning_controller.set_explorer_selection
+    )
+    explorer_space, explorer_ref = (
+        explorer_controller.current_embedding_selection()
+    )
+    active_learning_controller.set_explorer_selection(
+        explorer_space,
+        explorer_ref,
+    )
+
     def activate_pipeline_in_explorer(name, selected_pipeline):
         try:
             pipeline_hash = explorer_controller.activate_pipeline(
@@ -194,6 +205,14 @@ def main():
         pipeline_view=pipeline_view,
         active_learning_view=active_learning_view,
         terminal_view=terminal_view,
+    )
+
+    def open_active_learning_example(ref):
+        if explorer_controller.navigate_to_embedding(ref):
+            window.tabs.setCurrentWidget(explorer_view)
+
+    active_learning_controller.open_example_requested.connect(
+        open_active_learning_example
     )
 
     app.aboutToQuit.connect(
