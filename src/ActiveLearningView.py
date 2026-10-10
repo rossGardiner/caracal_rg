@@ -5,6 +5,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -35,7 +36,10 @@ class ActiveLearningView(QWidget):
     open_candidate_requested = Signal()
     label_candidate_positive_requested = Signal()
     label_candidate_negative_requested = Signal()
+    remove_candidate_label_requested = Signal()
     skip_candidate_requested = Signal()
+    previous_candidate_requested = Signal()
+    next_candidate_requested = Signal()
 
     _CLASSIFIER_PLACEHOLDER = "Select classifier…"
     _PIPELINE_PLACEHOLDER = "Select training pipeline…"
@@ -159,10 +163,18 @@ class ActiveLearningView(QWidget):
         self.candidate_ref_value = QLabel("—")
         self.candidate_probability_value = QLabel("—")
         self.candidate_reason_value = QLabel("—")
+        self.candidate_label_value = QLabel("—")
+        self.round_positive_value = QLabel("0")
+        self.round_negative_value = QLabel("0")
+        self.round_skipped_value = QLabel("0")
+        self.round_unreviewed_value = QLabel("0")
 
+        self.previous_candidate_button = QPushButton("Previous")
+        self.next_candidate_button = QPushButton("Next")
         self.open_candidate_button = QPushButton("Open in Explorer")
         self.candidate_positive_button = QPushButton("Positive")
         self.candidate_negative_button = QPushButton("Negative")
+        self.remove_candidate_label_button = QPushButton("Remove label")
         self.skip_candidate_button = QPushButton("Skip")
 
         self.candidate_positive_button.setToolTip(
@@ -171,10 +183,25 @@ class ActiveLearningView(QWidget):
         self.candidate_negative_button.setToolTip(
             "Label this review candidate negative (N)"
         )
+        self.remove_candidate_label_button.setToolTip(
+            "Remove this candidate's human label"
+        )
         self.skip_candidate_button.setToolTip(
             "Skip this review candidate without adding a label (S)"
         )
+        self.previous_candidate_button.setToolTip(
+            "Show the previous review candidate (Left arrow)"
+        )
+        self.next_candidate_button.setToolTip(
+            "Show the next review candidate (Right arrow)"
+        )
 
+        self.previous_candidate_button.clicked.connect(
+            self.previous_candidate_requested.emit
+        )
+        self.next_candidate_button.clicked.connect(
+            self.next_candidate_requested.emit
+        )
         self.open_candidate_button.clicked.connect(
             self.open_candidate_requested.emit
         )
@@ -184,24 +211,41 @@ class ActiveLearningView(QWidget):
         self.candidate_negative_button.clicked.connect(
             self.label_candidate_negative_requested.emit
         )
+        self.remove_candidate_label_button.clicked.connect(
+            self.remove_candidate_label_requested.emit
+        )
         self.skip_candidate_button.clicked.connect(
             self.skip_candidate_requested.emit
         )
 
+        candidate_navigation = QHBoxLayout()
+        candidate_navigation.addWidget(self.previous_candidate_button)
+        candidate_navigation.addWidget(self.next_candidate_button)
+        candidate_navigation.addWidget(self.open_candidate_button)
+        candidate_navigation.addStretch(1)
+
         candidate_buttons = QHBoxLayout()
-        candidate_buttons.addWidget(self.open_candidate_button)
         candidate_buttons.addWidget(self.candidate_positive_button)
         candidate_buttons.addWidget(self.candidate_negative_button)
+        candidate_buttons.addWidget(self.remove_candidate_label_button)
         candidate_buttons.addWidget(self.skip_candidate_button)
         candidate_buttons.addStretch(1)
 
         self.candidate_positive_shortcut = QShortcut(QKeySequence("P"), self)
         self.candidate_negative_shortcut = QShortcut(QKeySequence("N"), self)
         self.candidate_skip_shortcut = QShortcut(QKeySequence("S"), self)
+        self.candidate_previous_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Left), self
+        )
+        self.candidate_next_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Right), self
+        )
         for shortcut in (
             self.candidate_positive_shortcut,
             self.candidate_negative_shortcut,
             self.candidate_skip_shortcut,
+            self.candidate_previous_shortcut,
+            self.candidate_next_shortcut,
         ):
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
@@ -214,29 +258,54 @@ class ActiveLearningView(QWidget):
         self.candidate_skip_shortcut.activated.connect(
             self.skip_candidate_requested.emit
         )
+        self.candidate_previous_shortcut.activated.connect(
+            self.previous_candidate_requested.emit
+        )
+        self.candidate_next_shortcut.activated.connect(
+            self.next_candidate_requested.emit
+        )
 
         candidate_group = QGroupBox("Review candidate")
         candidate_layout = QVBoxLayout(candidate_group)
+
+        candidate_summary = QHBoxLayout()
         candidate_form = QFormLayout()
         candidate_form.addRow("Queue:", self.candidate_position_value)
         candidate_form.addRow("Chunk:", self.candidate_ref_value)
         candidate_form.addRow("Probability:", self.candidate_probability_value)
         candidate_form.addRow("Reason:", self.candidate_reason_value)
-        candidate_layout.addLayout(candidate_form)
+        candidate_form.addRow("Human label:", self.candidate_label_value)
+        candidate_summary.addLayout(candidate_form, 2)
+
+        round_form = QFormLayout()
+        round_form.addRow("Round +:", self.round_positive_value)
+        round_form.addRow("Round -:", self.round_negative_value)
+        round_form.addRow("Skipped:", self.round_skipped_value)
+        round_form.addRow("Unreviewed:", self.round_unreviewed_value)
+        candidate_summary.addLayout(round_form, 1)
+
+        candidate_layout.addLayout(candidate_summary)
+        candidate_layout.addLayout(candidate_navigation)
         candidate_layout.addLayout(candidate_buttons)
 
         self.error_value = QLabel()
         self.error_value.setWordWrap(True)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(classifier_group)
-        layout.addWidget(pipeline_group)
-        layout.addWidget(space_group)
-        layout.addWidget(explorer_group)
-        layout.addWidget(learner_group)
-        layout.addWidget(candidate_group)
-        layout.addWidget(self.error_value)
-        layout.addStretch(1)
+        # Keep configuration/status compact at the top and reserve the widest
+        # area for the two interactive parts of the workflow.  This avoids
+        # pushing the review controls below the bottom of a normal-height
+        # application window.
+        layout = QGridLayout(self)
+        layout.addWidget(classifier_group, 0, 0)
+        layout.addWidget(pipeline_group, 0, 1)
+        layout.addWidget(space_group, 1, 0)
+        layout.addWidget(learner_group, 1, 1)
+        layout.addWidget(explorer_group, 2, 0)
+        layout.addWidget(candidate_group, 2, 1)
+        layout.addWidget(self.error_value, 3, 0, 1, 2)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 2)
+        layout.setRowStretch(2, 1)
 
     def prompt_new_classifier_name(self, existing_names):
         existing = set(existing_names)
@@ -384,13 +453,28 @@ class ActiveLearningView(QWidget):
         )
 
         has_candidate = model.current_candidate is not None and not model.round_running
+        self.previous_candidate_button.setEnabled(
+            not model.round_running and model.can_go_previous_candidate
+        )
+        self.next_candidate_button.setEnabled(
+            not model.round_running and model.can_go_next_candidate
+        )
         self.open_candidate_button.setEnabled(has_candidate)
         self.candidate_positive_button.setEnabled(has_candidate)
         self.candidate_negative_button.setEnabled(has_candidate)
+        self.remove_candidate_label_button.setEnabled(
+            has_candidate and model.current_candidate_label is not None
+        )
         self.skip_candidate_button.setEnabled(has_candidate)
         self.candidate_positive_shortcut.setEnabled(has_candidate)
         self.candidate_negative_shortcut.setEnabled(has_candidate)
         self.candidate_skip_shortcut.setEnabled(has_candidate)
+        self.candidate_previous_shortcut.setEnabled(
+            not model.round_running and model.can_go_previous_candidate
+        )
+        self.candidate_next_shortcut.setEnabled(
+            not model.round_running and model.can_go_next_candidate
+        )
 
         messages = [message for message in (model.error, model.round_error) if message]
         self.error_value.setText("\n".join(messages))
@@ -481,19 +565,26 @@ class ActiveLearningView(QWidget):
         candidate = model.current_candidate
         position = model.review_position
 
+        self.round_positive_value.setText(str(model.review_positive_count))
+        self.round_negative_value.setText(str(model.review_negative_count))
+        self.round_skipped_value.setText(str(model.review_skipped_count))
+        self.round_unreviewed_value.setText(str(model.review_unreviewed_count))
+
         if candidate is None:
             if model.review_queue and not model.round_running:
                 self.candidate_position_value.setText(
-                    f"Complete · {len(model.review_queue)} reviewed/skipped"
+                    f"End of queue · {len(model.review_queue)} candidates"
                 )
                 self.candidate_ref_value.setText(
-                    "Run another round for fresh candidates"
+                    "Run another round for fresh candidates, or go Previous "
+                    "to review this round"
                 )
             else:
                 self.candidate_position_value.setText("—")
                 self.candidate_ref_value.setText("—")
             self.candidate_probability_value.setText("—")
             self.candidate_reason_value.setText("—")
+            self.candidate_label_value.setText("—")
             return
 
         current, total = position
@@ -503,6 +594,17 @@ class ActiveLearningView(QWidget):
         )
         self.candidate_probability_value.setText(f"{candidate.probability:.3f}")
         self.candidate_reason_value.setText(candidate.reason.value.replace("_", " "))
+
+        label = model.current_candidate_label
+        if label is BinaryLabel.POSITIVE:
+            text = "Positive"
+        elif label is BinaryLabel.NEGATIVE:
+            text = "Negative"
+        elif model.current_candidate_is_skipped:
+            text = "Unlabelled · skipped this round"
+        else:
+            text = "Unlabelled"
+        self.candidate_label_value.setText(text)
 
     def _emit_classifier_selection(self, index: int):
         classifier_id = self.classifier_selector.itemData(index)

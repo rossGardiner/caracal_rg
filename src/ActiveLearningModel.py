@@ -59,6 +59,7 @@ class ActiveLearningModel:
     round_error: str | None = None
     review_queue: tuple[ReviewCandidate, ...] = field(default_factory=tuple)
     review_index: int = 0
+    review_skipped_refs: set[EmbeddingRef] = field(default_factory=set)
     last_round_result: ActiveLearningRoundResult | None = None
 
     def __post_init__(self):
@@ -156,6 +157,68 @@ class ActiveLearningModel:
         if self.current_candidate is None:
             return None
         return self.review_index + 1, len(self.review_queue)
+
+    @property
+    def current_candidate_label(self):
+        candidate = self.current_candidate
+        if candidate is None or self.learner is None:
+            return None
+        return self.learner.label_for(candidate.ref)
+
+    @property
+    def current_candidate_is_skipped(self):
+        candidate = self.current_candidate
+        return (
+            candidate is not None
+            and candidate.ref in self.review_skipped_refs
+            and self.current_candidate_label is None
+        )
+
+    @property
+    def review_positive_count(self):
+        if self.learner is None:
+            return 0
+        return sum(
+            self.learner.label_for(candidate.ref) is BinaryLabel.POSITIVE
+            for candidate in self.review_queue
+        )
+
+    @property
+    def review_negative_count(self):
+        if self.learner is None:
+            return 0
+        return sum(
+            self.learner.label_for(candidate.ref) is BinaryLabel.NEGATIVE
+            for candidate in self.review_queue
+        )
+
+    @property
+    def review_skipped_count(self):
+        if self.learner is None:
+            return 0
+        return sum(
+            candidate.ref in self.review_skipped_refs
+            and self.learner.label_for(candidate.ref) is None
+            for candidate in self.review_queue
+        )
+
+    @property
+    def review_unreviewed_count(self):
+        if self.learner is None:
+            return len(self.review_queue)
+        return sum(
+            self.learner.label_for(candidate.ref) is None
+            and candidate.ref not in self.review_skipped_refs
+            for candidate in self.review_queue
+        )
+
+    @property
+    def can_go_previous_candidate(self):
+        return bool(self.review_queue) and self.review_index > 0
+
+    @property
+    def can_go_next_candidate(self):
+        return bool(self.review_queue) and self.review_index < len(self.review_queue)
 
     def set_available_pipelines(
         self,
@@ -361,6 +424,7 @@ class ActiveLearningModel:
         self.round_error = None
         self.review_queue = ()
         self.review_index = 0
+        self.review_skipped_refs.clear()
         self.last_round_result = None
 
     def set_round_progress(self, progress: ActiveLearningProgress):
@@ -380,7 +444,7 @@ class ActiveLearningModel:
         self.last_round_result = result
         self.review_queue = tuple(result.review_queue)
         self.review_index = 0
-        self.skip_labelled_candidates()
+        self.review_skipped_refs.clear()
 
     def set_round_failed(self, message: str):
         self.round_running = False
@@ -388,6 +452,7 @@ class ActiveLearningModel:
         self.round_error = str(message)
         self.review_queue = ()
         self.review_index = 0
+        self.review_skipped_refs.clear()
         self.last_round_result = None
 
     def clear_round_state(self):
@@ -396,20 +461,42 @@ class ActiveLearningModel:
         self.round_error = None
         self.review_queue = ()
         self.review_index = 0
+        self.review_skipped_refs.clear()
         self.last_round_result = None
 
     def advance_candidate(self):
+        """Move forward one queue position, including into the completed state."""
+
         if self.current_candidate is not None:
             self.review_index += 1
-        self.skip_labelled_candidates()
 
-    def skip_labelled_candidates(self):
-        if self.learner is None:
+    def previous_candidate(self):
+        """Move backward one position, including back from the completed state."""
+
+        if not self.review_queue or self.review_index <= 0:
             return
+        self.review_index -= 1
 
-        labelled = self.learner.labelled_refs
-        while (
-            0 <= self.review_index < len(self.review_queue)
-            and self.review_queue[self.review_index].ref in labelled
-        ):
-            self.review_index += 1
+    def mark_candidate_labelled(self, ref: EmbeddingRef):
+        """Record that a queue item is no longer explicitly skipped."""
+
+        if not isinstance(ref, EmbeddingRef):
+            raise TypeError("ref must be an EmbeddingRef")
+        self.review_skipped_refs.discard(ref)
+
+    def mark_current_candidate_skipped(self):
+        """Mark the current unlabelled item skipped for this review round."""
+
+        candidate = self.current_candidate
+        if candidate is None:
+            return
+        if self.learner is not None and self.learner.label_for(candidate.ref) is None:
+            self.review_skipped_refs.add(candidate.ref)
+        self.advance_candidate()
+
+    def clear_review_disposition(self, ref: EmbeddingRef):
+        """Return one queue item to the unreviewed state for this round."""
+
+        if not isinstance(ref, EmbeddingRef):
+            raise TypeError("ref must be an EmbeddingRef")
+        self.review_skipped_refs.discard(ref)

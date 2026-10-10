@@ -110,6 +110,11 @@ class ActiveLearningController(QObject):
             self.label_current_candidate_negative
         )
         self.view.skip_candidate_requested.connect(self.skip_current_candidate)
+        self.view.previous_candidate_requested.connect(self.previous_candidate)
+        self.view.next_candidate_requested.connect(self.next_candidate)
+        self.view.remove_candidate_label_requested.connect(
+            self.remove_current_candidate_label
+        )
 
         self.set_pipeline_definitions(pipeline_definitions)
 
@@ -209,7 +214,6 @@ class ActiveLearningController(QObject):
     @Slot(object, object)
     def set_explorer_selection(self, embedding_space, ref):
         self.model.set_explorer_selection(embedding_space, ref)
-        self.model.skip_labelled_candidates()
         self.refresh_view()
 
     @Slot(str)
@@ -286,7 +290,7 @@ class ActiveLearningController(QObject):
 
         ref = self.model.explorer_ref
         self.model.learner.remove_label(ref)
-        self.model.skip_labelled_candidates()
+        self.model.clear_review_disposition(ref)
         self._persist_runtime_labels()
         self.refresh_view()
 
@@ -342,7 +346,36 @@ class ActiveLearningController(QObject):
     def skip_current_candidate(self):
         if self.model.round_running:
             return
+        self.model.mark_current_candidate_skipped()
+        self.refresh_view()
+
+    @Slot()
+    def previous_candidate(self):
+        if self.model.round_running:
+            return
+        self.model.previous_candidate()
+        self.refresh_view()
+
+    @Slot()
+    def next_candidate(self):
+        if self.model.round_running:
+            return
         self.model.advance_candidate()
+        self.refresh_view()
+
+    @Slot()
+    def remove_current_candidate_label(self):
+        if self.model.round_running or not self.model.is_ready:
+            return
+
+        candidate = self.model.current_candidate
+        if candidate is None or self.model.learner is None:
+            return
+
+        self.model.learner.remove_label(candidate.ref)
+        self.model.clear_review_disposition(candidate.ref)
+        self.model.round_error = None
+        self._persist_runtime_labels()
         self.refresh_view()
 
     @Slot(int, object)
@@ -452,10 +485,9 @@ class ActiveLearningController(QObject):
         current_candidate = self.model.current_candidate
         self.model.learner.label(ref, label)
 
+        self.model.mark_candidate_labelled(ref)
         if current_candidate is not None and current_candidate.ref == ref:
             self.model.advance_candidate()
-        else:
-            self.model.skip_labelled_candidates()
 
         self.model.round_error = None
         self._persist_runtime_labels()
@@ -470,6 +502,7 @@ class ActiveLearningController(QObject):
             return
 
         self.model.learner.label(candidate.ref, label)
+        self.model.mark_candidate_labelled(candidate.ref)
         self.model.advance_candidate()
         self.model.round_error = None
         self._persist_runtime_labels()
