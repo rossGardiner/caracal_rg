@@ -1,16 +1,15 @@
-"""Construct runtime callback pipelines from editable pipeline definitions."""
+"""Construct runtime callback pipelines from editable pipeline definitions.
+
+Builders import optional integrations only when their stages are constructed.
+"""
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import math
 from typing import Any
 
-from src.AudioBufferLoader import AudioBufferLoader
 from src.CanonicalChunkGrid import CanonicalChunkGrid
-from src.CaracalStreamer import CaracalStreamer
 from src.EmbeddingCache import EmbeddingCache
-from src.EmbeddingCacheLoader import EmbeddingCacheLoader
-from src.EmbeddingCacheSaver import EmbeddingCacheSaver
-from src.EmbeddingsCreator import EmbeddingsCreator
 from src.HighPassFilter import HighPassFilter
 from src.Pipeline import Pipeline
 from src.PipelineDefinition import PipelineDefinition, StageDefinition
@@ -245,12 +244,16 @@ def _embedding_cache(
 
 
 def _build_caracal_streamer(parameters, context):
+    from src.CaracalStreamer import CaracalStreamer
+
     return CaracalStreamer(
         rootpath=parameters["rootpath"],
     )
 
 
 def _build_audio_buffer_loader(parameters, context):
+    from src.AudioBufferLoader import AudioBufferLoader
+
     return AudioBufferLoader(
         chunk_grid=CanonicalChunkGrid(
             chunk_duration_s=parameters["chunk_duration_s"],
@@ -279,6 +282,9 @@ def _build_resampler(parameters, context):
 
 
 def _build_embedding_cache_loader(parameters, context):
+    from src.EmbeddingCacheLoader import EmbeddingCacheLoader
+    from src.EmbeddingsCreator import EmbeddingsCreator
+
     embeddings_creator = context.require_stage(
         "embeddings_creator"
     )
@@ -298,6 +304,8 @@ def _build_embedding_cache_loader(parameters, context):
 
 
 def _build_embeddings_creator(parameters, context):
+    from src.EmbeddingsCreator import EmbeddingsCreator
+
     return EmbeddingsCreator(
         model_path=parameters["model_path"],
         use_cuda=parameters["use_cuda"],
@@ -306,6 +314,9 @@ def _build_embeddings_creator(parameters, context):
 
 
 def _build_embedding_cache_saver(parameters, context):
+    from src.EmbeddingCacheSaver import EmbeddingCacheSaver
+    from src.EmbeddingsCreator import EmbeddingsCreator
+
     embeddings_creator = context.require_stage(
         "embeddings_creator"
     )
@@ -344,6 +355,8 @@ def _validate_parameter_value(
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError(f"{parameter.name} must be a number")
         validated = float(value)
+        if not math.isfinite(validated):
+            raise ValueError(f"{parameter.name} must be a finite number")
 
     elif kind in {"text", "file", "directory"}:
         if not isinstance(value, str):
