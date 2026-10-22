@@ -132,40 +132,44 @@ class EmbeddingCache:
             )
         )
 
-        np.savez_compressed(
-            temporary_path,
+        try:
+            np.savez_compressed(
+                temporary_path,
 
-            values=np.asarray(
-                values
-            ),
+                values=np.asarray(
+                    values
+                ),
 
-            recording_id=str(
-                recording_id
-            ),
+                recording_id=str(
+                    recording_id
+                ),
 
-            chunk_index=np.int64(
-                chunk_index
-            ),
+                chunk_index=np.int64(
+                    chunk_index
+                ),
 
-            pipeline_hash=str(
-                pipeline_hash
-            ),
+                pipeline_hash=str(
+                    pipeline_hash
+                ),
 
-            embedding_name=str(
-                embedding_name
-            ),
+                embedding_name=str(
+                    embedding_name
+                ),
 
-            metadata=json.dumps(
-                metadata or {},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
+                metadata=json.dumps(
+                    metadata or {},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
 
-        os.replace(
-            temporary_path,
-            path,
-        )
+            os.replace(
+                temporary_path,
+                path,
+            )
+
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
         return path
         
@@ -235,7 +239,8 @@ class EmbeddingCache:
 
         results = []
 
-        for path in recording_directory.glob("*.npz"):
+        # Hidden archives are private in-progress writes, not cache entries.
+        for path in recording_directory.glob("[!.]*.npz"):
 
             with np.load(
                 path,
@@ -280,6 +285,18 @@ class EmbeddingCache:
             if stored_embedding_name != embedding_name:
                 raise ValueError(
                     f"Cached embedding_name mismatch at {path}"
+                )
+
+            expected_path = self._get_path(
+                recording_id=recording_id,
+                chunk_index=chunk_index,
+                pipeline_hash=pipeline_hash,
+                embedding_name=embedding_name,
+            )
+
+            if path.resolve() != expected_path.resolve():
+                raise ValueError(
+                    f"Cached embedding is stored at the wrong path: {path}"
                 )
 
             results.append(
@@ -475,7 +492,7 @@ class EmbeddingCache:
         temporary list before a large corpus scan can even begin.  Sorting the
         recording directories and then each recording's chunk files preserves
         the same deterministic path order while keeping path memory bounded to
-        one recording at a time.
+        one recording at a time. Hidden temporary archives are excluded.
         """
 
         recording_directories = sorted(
@@ -485,7 +502,7 @@ class EmbeddingCache:
         )
         for recording_directory in recording_directories:
             yield from sorted(
-                recording_directory.glob("*.npz")
+                recording_directory.glob("[!.]*.npz")
             )
 
     @staticmethod
