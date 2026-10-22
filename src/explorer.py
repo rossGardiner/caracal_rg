@@ -4,6 +4,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from src.ApplicationTheme import apply_application_theme
 from src.ActiveLearningClassifierStore import ActiveLearningClassifierStore
 from src.ActiveLearningController import ActiveLearningController
 from src.ActiveLearningModel import ActiveLearningModel
@@ -34,6 +35,7 @@ def main():
     app = QApplication(
         sys.argv
     )
+    apply_application_theme(app)
 
     terminal_view = TerminalView()
     terminal_view.start_capture()

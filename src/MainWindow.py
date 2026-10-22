@@ -32,16 +32,30 @@ class _WorkspaceTitleBar(QWidget):
     def __init__(self, dock: QDockWidget, detach):
         super().__init__(dock)
         self._detach = detach
+        self.setObjectName("workspace_title_bar")
+        self.setToolTip(
+            "Drag to rearrange docks · Double-click to open a separate window"
+        )
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(7, 1, 3, 1)
+        layout.setContentsMargins(7, 4, 4, 4)
         layout.setSpacing(6)
 
+        grip = QLabel("⋮⋮", self)
+        grip.setObjectName("workspace_drag_grip")
+        grip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        grip.setToolTip("Drag this bar to rearrange")
+        layout.addWidget(grip)
+        self._drag_grip = grip
+
         title = QLabel(dock.windowTitle(), self)
+        title.setObjectName("workspace_title_label")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title, 1)
 
         close = QToolButton(self)
+        close.setObjectName("workspace_close_button")
         close.setText("×")
         close.setToolTip("Hide workspace")
         close.clicked.connect(dock.hide)
@@ -51,6 +65,15 @@ class _WorkspaceTitleBar(QWidget):
     def set_detached(self, detached: bool):
         """Hide the dock's close control while in its own window."""
         self._close_button.setVisible(not detached)
+        self._drag_grip.setVisible(not detached)
+        self.setCursor(
+            Qt.CursorShape.ArrowCursor if detached
+            else Qt.CursorShape.OpenHandCursor
+        )
+        self.setToolTip(
+            "Double-click to dock back" if detached
+            else "Drag to rearrange docks · Double-click to open a separate window"
+        )
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
