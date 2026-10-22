@@ -1,14 +1,17 @@
 """Top-level application shell with individually dockable workspaces.
 
-Each MVC view has a native QDockWidget title bar. Workspaces can be split and
-rearranged, but are not tabified or floated into independent windows.
+Each MVC view lives in a movable dock whose content scrolls independently
+when the user shrinks the main window or splits several workspaces.
 """
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QDockWidget,
+    QFrame,
     QMainWindow,
+    QScrollArea,
+    QSizePolicy,
     QToolBar,
     QWidget,
 )
@@ -109,10 +112,18 @@ class MainWindow(QMainWindow):
             "Caracal"
         )
 
-        self.resize(
-            1450,
-            900,
-        )
+        # The preferred opening size must also fit on smaller displays.
+        # Dock combinations must never force the shell to grow to fit their
+        # content; the scroll areas absorb that overflow instead.
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                min(1450, max(1, int(available.width() * 0.9))),
+                min(900, max(1, int(available.height() * 0.9))),
+            )
+        else:
+            self.resize(1450, 900)
 
     def _add_workspace(
         self,
@@ -136,9 +147,31 @@ class MainWindow(QMainWindow):
             QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
-        dock.setWidget(
-            view
+        # A dock's child determines its minimum size. Give the dock a
+        # shrinkable scroll area instead of the potentially large MVC view;
+        # otherwise one view can prevent the whole window from being resized.
+        scroll_area = QScrollArea(dock)
+        scroll_area.setObjectName(f"{object_name}_scroll_area")
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
+        scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        # Keep a small, usable dock footprint. ``Ignored`` plus a zero
+        # minimum lets Qt collapse a dock until its title bar/drop target is
+        # effectively unusable. ``Expanding`` still allows the scroll area
+        # to shrink below the view's preferred size; its scrollbars handle
+        # the overflowing content instead.
+        scroll_area.setMinimumSize(160, 100)
+        scroll_area.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        scroll_area.setWidget(view)
+        dock.setWidget(scroll_area)
 
         self.addDockWidget(
             Qt.DockWidgetArea.LeftDockWidgetArea,
