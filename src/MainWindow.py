@@ -1,12 +1,15 @@
-"""Top-level application window.
+"""Top-level application shell with individually dockable workspaces.
 
-The window composes independent application views into tabs. It deliberately
-contains no explorer or pipeline-processing logic.
+Each MVC view has a native QDockWidget title bar. Workspaces can be split and
+rearranged, but are not tabified or floated into independent windows.
 """
 
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QDockWidget,
     QMainWindow,
-    QTabWidget,
+    QToolBar,
     QWidget,
 )
 
@@ -14,7 +17,11 @@ from src.PipelineView import PipelineView
 
 
 class MainWindow(QMainWindow):
-    """Application shell containing the application's independent MVC views."""
+    """Application shell containing the application's independent MVC views.
+
+    The shell owns layout only. Explorer, pipeline, active-learning, and
+    terminal behaviour remains inside their existing MVC objects.
+    """
 
     def __init__(
         self,
@@ -60,31 +67,43 @@ class MainWindow(QMainWindow):
         self.active_learning_view = active_learning_view
         self.terminal_view = terminal_view
 
-        self.tabs = QTabWidget()
-        self.tabs.addTab(
-            self.explorer_view,
-            "Explorer",
+        self._view_docks: dict[int, QDockWidget] = {}
+        self._workspace_docks: list[QDockWidget] = []
+
+        # Native QDockWidgets, but without tabification (which hides the
+        # draggable title bars) or floating windows (which can end up behind
+        # the application). Avoid animations when resizing heavy Explorer panes.
+        self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks)
+
+        self.explorer_dock = self._add_workspace(
+            title="Explorer",
+            object_name="explorer_workspace_dock",
+            view=self.explorer_view,
         )
-        self.tabs.addTab(
-            self.pipeline_view,
-            "Pipelines",
+        self.pipeline_dock = self._add_workspace(
+            title="Pipelines",
+            object_name="pipelines_workspace_dock",
+            view=self.pipeline_view,
         )
 
+        self.active_learning_dock = None
         if self.active_learning_view is not None:
-            self.tabs.addTab(
-                self.active_learning_view,
-                "Active Learning",
+            self.active_learning_dock = self._add_workspace(
+                title="Active Learning",
+                object_name="active_learning_workspace_dock",
+                view=self.active_learning_view,
             )
 
+        self.terminal_dock = None
         if self.terminal_view is not None:
-            self.tabs.addTab(
-                self.terminal_view,
-                "Terminal",
+            self.terminal_dock = self._add_workspace(
+                title="Terminal",
+                object_name="terminal_workspace_dock",
+                view=self.terminal_view,
             )
 
-        self.setCentralWidget(
-            self.tabs
-        )
+        self._create_view_menu()
+        self.reset_workspace_layout()
 
         self.setWindowTitle(
             "Caracal"
@@ -93,6 +112,162 @@ class MainWindow(QMainWindow):
         self.resize(
             1450,
             900,
+        )
+
+    def _add_workspace(
+        self,
+        title: str,
+        object_name: str,
+        view: QWidget,
+    ) -> QDockWidget:
+        """Wrap one top-level application view in a movable dock."""
+
+        dock = QDockWidget(
+            title,
+            self,
+        )
+        dock.setObjectName(
+            object_name
+        )
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.AllDockWidgetAreas
+        )
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        dock.setWidget(
+            view
+        )
+
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            dock,
+        )
+
+        self._workspace_docks.append(
+            dock
+        )
+        self._view_docks[id(view)] = dock
+
+        return dock
+
+    def _create_view_menu(self):
+        """Keep every workspace accessible even when its dock is hidden."""
+
+        view_menu = self.menuBar().addMenu("&View")
+        workspace_toolbar = QToolBar("Workspaces", self)
+        workspace_toolbar.setObjectName("workspace_switcher_toolbar")
+        workspace_toolbar.setMovable(False)
+        workspace_toolbar.setFloatable(False)
+        workspace_toolbar.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        self.addToolBar(workspace_toolbar)
+        self.workspace_toolbar = workspace_toolbar
+
+        for dock in self._workspace_docks:
+            action = dock.toggleViewAction()
+            view_menu.addAction(action)
+            workspace_toolbar.addAction(action)
+
+        view_menu.addSeparator()
+
+        reset_action = QAction(
+            "Reset workspace layout",
+            self,
+        )
+        reset_action.triggered.connect(
+            self.reset_workspace_layout
+        )
+        view_menu.addAction(
+            reset_action
+        )
+        self.reset_layout_action = reset_action
+
+    def reset_workspace_layout(self):
+        """Show Explorer and Active Learning side by side with title bars.
+
+        Pipelines and Terminal start hidden to avoid squeezing the two larger
+        views; users can reveal them from the Workspaces toolbar or View menu.
+        """
+        for dock in self._workspace_docks:
+            dock.setFloating(False)
+            self.removeDockWidget(dock)
+
+        # Register the docks before splitting to keep Qt's dock area bookkeeping
+        # consistent when the user resets after moving/hiding workspaces.
+        for dock in self._workspace_docks:
+            self.addDockWidget(
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                dock,
+            )
+
+        secondary = (
+            self.active_learning_dock
+            or self.pipeline_dock
+            or self.terminal_dock
+        )
+        self.splitDockWidget(
+            self.explorer_dock,
+            secondary,
+            Qt.Orientation.Horizontal,
+        )
+
+        # Hidden docks are pre-positioned; revealing one creates a split,
+        # rather than a tab group or a separate top-level window.
+        if self.pipeline_dock is not secondary:
+            self.splitDockWidget(
+                secondary,
+                self.pipeline_dock,
+                Qt.Orientation.Vertical,
+            )
+        if self.terminal_dock is not None and self.terminal_dock is not secondary:
+            self.splitDockWidget(
+                self.explorer_dock,
+                self.terminal_dock,
+                Qt.Orientation.Vertical,
+            )
+
+        for dock in self._workspace_docks:
+            dock.setVisible(
+                dock is self.explorer_dock or dock is secondary
+            )
+
+        QTimer.singleShot(0, self._size_default_workspaces)
+
+    def _size_default_workspaces(self):
+        """Give Explorer slightly more width when its partner is visible."""
+        secondary = (
+            self.active_learning_dock
+            or self.pipeline_dock
+            or self.terminal_dock
+        )
+        if secondary.isVisible() and self.explorer_dock.isVisible():
+            self.resizeDocks(
+                [self.explorer_dock, secondary],
+                [850, 650],
+                Qt.Orientation.Horizontal,
+            )
+
+    def focus_view(
+        self,
+        view: QWidget,
+    ):
+        """Reveal and select one composed application view."""
+
+        dock = self._view_docks.get(
+            id(view)
+        )
+        if dock is None:
+            raise ValueError(
+                "view is not managed by this MainWindow"
+            )
+
+        dock.show()
+        dock.raise_()
+        view.setFocus(
+            Qt.FocusReason.OtherFocusReason
         )
 
     def closeEvent(

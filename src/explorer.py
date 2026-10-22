@@ -193,25 +193,14 @@ def main():
         explorer_ref,
     )
 
-    def activate_pipeline_in_explorer(name, selected_pipeline):
-        try:
-            pipeline_hash = explorer_controller.activate_pipeline(
-                name,
-                selected_pipeline,
-            )
-        except Exception as exc:
-            pipeline_controller.pipeline_activation_failed(
-                f"Could not activate pipeline in Explorer: {exc}"
-            )
-            return
-
-        pipeline_controller.set_active_pipeline(
-            name,
-            pipeline_hash,
-        )
-
     pipeline_controller.pipeline_activation_ready.connect(
-        activate_pipeline_in_explorer
+        explorer_controller.activate_pipeline
+    )
+    explorer_controller.pipeline_activation_succeeded.connect(
+        pipeline_controller.set_active_pipeline
+    )
+    explorer_controller.pipeline_activation_failed.connect(
+        pipeline_controller.pipeline_activation_failed
     )
 
     window = MainWindow(
@@ -223,7 +212,7 @@ def main():
 
     def open_active_learning_example(ref):
         if explorer_controller.navigate_to_embedding(ref):
-            window.tabs.setCurrentWidget(explorer_view)
+            window.focus_view(explorer_view)
 
     active_learning_controller.open_example_requested.connect(
         open_active_learning_example

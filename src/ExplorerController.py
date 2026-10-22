@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import partial
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -14,6 +15,20 @@ from src.LatestJobRunner import LatestJobRunner
 from src.SpectrogramData import calculate_spectrogram
 
 
+@dataclass(frozen=True)
+class _PreparedPipelineActivation:
+    """Explorer-specific runtime state prepared away from the Qt thread."""
+
+    pipeline_name: str
+    pipeline: object
+    source: object
+    loader: object
+    cache_loader: object
+    embeddings_creator: object
+    embedding_request: object
+    audio_packets: tuple
+
+
 class ExplorerController(QObject):
     """Coordinate interactive explorer work between model and view.
 
@@ -25,6 +40,8 @@ class ExplorerController(QObject):
     stop_browsing_playback_requested = Signal()
     stop_processed_playback_requested = Signal()
     embedding_selection_changed = Signal(object, object)
+    pipeline_activation_succeeded = Signal(str, str)
+    pipeline_activation_failed = Signal(str)
 
     def __init__(
         self,
@@ -69,6 +86,21 @@ class ExplorerController(QObject):
         self._processed_spectrogram_request_id = 0
         self._embedding_cache_request_id = 0
         self._interactive_embedding_request_id = 0
+        self._pipeline_activation_request_id = 0
+
+        self.pipeline_activation_jobs = LatestJobRunner(
+            name="explorer-pipeline-activation-jobs",
+            parent=self,
+        )
+        self.pipeline_activation_jobs.ready.connect(
+            self._pipeline_activation_ready
+        )
+        self.pipeline_activation_jobs.failed.connect(
+            self._pipeline_activation_failed
+        )
+        self.pipeline_activation_jobs.progress.connect(
+            self._pipeline_activation_progress
+        )
 
         self.embedding_request = EmbeddingRequest(
             cache=self.model.embedding_cache,
@@ -132,20 +164,124 @@ class ExplorerController(QObject):
 
     @Slot(str, object)
     def activate_pipeline(self, pipeline_name: str, pipeline):
-        """Make one runtime pipeline the Explorer's active configuration."""
+        """Prepare and activate a runtime pipeline without blocking Qt.
+
+        Pipeline construction already happens in ``PipelineController``'s
+        worker.  Explorer activation has its own expensive step for CARACAL
+        datasets: parsing every syslog into ``AudioPacket`` objects.  Keep that
+        preparation off the GUI thread too, then apply the prepared state
+        atomically when the worker completes.
+        """
+
+        self._pipeline_activation_request_id += 1
+        request_id = self._pipeline_activation_request_id
+
+        self.status_changed.emit(
+            f"Preparing {pipeline_name} for Explorer..."
+        )
+
+        self.pipeline_activation_jobs.submit(
+            request_id,
+            partial(
+                self._prepare_pipeline_activation,
+                pipeline_name,
+                pipeline,
+                progress_callback=partial(
+                    self.pipeline_activation_jobs.report_progress,
+                    request_id,
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _prepare_pipeline_activation(
+        pipeline_name: str,
+        pipeline,
+        *,
+        progress_callback=None,
+    ) -> _PreparedPipelineActivation:
+        """Resolve Explorer services and parse recordings off-thread."""
 
         source = pipeline.get_link(CaracalStreamer)
         loader = pipeline.get_link(AudioBufferLoader)
         cache_loader = pipeline.get_link(EmbeddingCacheLoader)
         embeddings_creator = pipeline.get_link(EmbeddingsCreator)
 
-        # EmbeddingRequest currently mirrors the interactive subset of the
-        # configured callback graph, so fail activation early if that subset
-        # is not available rather than leaving the Explorer half-switched.
+        # Validate that the configured pipeline supports the interactive
+        # Explorer subset before touching the current Explorer state.
         candidate_request = EmbeddingRequest(
             cache=cache_loader.cache,
             pipeline=pipeline,
         )
+
+        # This is the expensive part for large CARACAL datasets.  SyslogParser
+        # work must not run on the Qt event thread.
+        audio_packets = tuple(
+            source.get_audio_packets(
+                progress_callback=progress_callback
+            )
+        )
+
+        return _PreparedPipelineActivation(
+            pipeline_name=str(pipeline_name),
+            pipeline=pipeline,
+            source=source,
+            loader=loader,
+            cache_loader=cache_loader,
+            embeddings_creator=embeddings_creator,
+            embedding_request=candidate_request,
+            audio_packets=audio_packets,
+        )
+
+    @Slot(int, object)
+    def _pipeline_activation_progress(self, request_id: int, progress):
+        if request_id != self._pipeline_activation_request_id:
+            return
+
+        try:
+            completed, total = progress
+        except (TypeError, ValueError):
+            return
+
+        self.status_changed.emit(
+            f"Preparing Explorer recordings... {completed}/{total} syslogs"
+        )
+
+    @Slot(int, object)
+    def _pipeline_activation_ready(self, request_id: int, prepared):
+        if request_id != self._pipeline_activation_request_id:
+            return
+
+        try:
+            pipeline_hash = self._apply_pipeline_activation(prepared)
+        except Exception as exc:
+            message = (
+                f"Could not activate pipeline in Explorer: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.status_changed.emit(message)
+            self.pipeline_activation_failed.emit(message)
+            return
+
+        self.pipeline_activation_succeeded.emit(
+            prepared.pipeline_name,
+            pipeline_hash,
+        )
+
+    @Slot(int, str)
+    def _pipeline_activation_failed(self, request_id: int, message: str):
+        if request_id != self._pipeline_activation_request_id:
+            return
+
+        message = f"Could not activate pipeline in Explorer: {message}"
+        self.status_changed.emit(message)
+        self.pipeline_activation_failed.emit(message)
+
+    def _apply_pipeline_activation(
+        self,
+        prepared: _PreparedPipelineActivation,
+    ) -> str:
+        """Atomically swap already-prepared Explorer state on the GUI thread."""
 
         previous_recording_id = self.model.selected_recording_id
 
@@ -159,15 +295,16 @@ class ExplorerController(QObject):
         self._interactive_embedding_request_id += 1
 
         self.model.set_pipeline_context(
-            pipeline=pipeline,
-            pipeline_name=pipeline_name,
-            audio_packet_source=source,
-            audio_reader=AudioReader(is_caracal=loader.is_caracal),
-            chunk_grid=loader.chunk_grid,
-            embedding_cache=cache_loader.cache,
-            embedding_name=embeddings_creator.embedding_name,
+            pipeline=prepared.pipeline,
+            pipeline_name=prepared.pipeline_name,
+            audio_packet_source=prepared.source,
+            audio_reader=AudioReader(is_caracal=prepared.loader.is_caracal),
+            chunk_grid=prepared.loader.chunk_grid,
+            embedding_cache=prepared.cache_loader.cache,
+            embedding_name=prepared.embeddings_creator.embedding_name,
+            audio_packets=prepared.audio_packets,
         )
-        self.embedding_request = candidate_request
+        self.embedding_request = prepared.embedding_request
 
         self.model.browsing_buffers = []
         self.model.processed_buffers = []
@@ -875,6 +1012,7 @@ class ExplorerController(QObject):
 
         self._is_shutdown = True
 
+        self.pipeline_activation_jobs.shutdown()
         self.browsing_audio_jobs.shutdown()
         self.browsing_spectrogram_jobs.shutdown()
         self.processed_spectrogram_jobs.shutdown()

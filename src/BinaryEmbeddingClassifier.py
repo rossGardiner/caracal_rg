@@ -10,13 +10,10 @@ from torch import nn
 class BinaryClassifierParameters:
     """Training parameters for one binary classifier on embeddings.
 
-    The defaults mirror the simple classifier behaviour that proved useful in
-    CaracalxPerch: a linear head, Adam optimisation, class-weighted binary
+    The defaults are: linear head, Adam optimisation, class-weighted binary
     cross entropy, and a bounded number of negatives per positive example.
 
-    This object contains only model/training configuration.  It deliberately
-    contains no pipeline identity, cache paths, labels, or active-learning
-    selection policy.
+    This object contains only model/training configuration.  
     """
 
     hidden_dimension: Optional[int] = None

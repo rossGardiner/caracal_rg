@@ -97,8 +97,14 @@ class ExplorerModel:
         chunk_grid: CanonicalChunkGrid,
         embedding_cache,
         embedding_name: str,
+        audio_packets=None,
     ):
-        """Replace the pipeline and the explorer services derived from it."""
+        """Replace the pipeline and the explorer services derived from it.
+
+        ``audio_packets`` may be supplied by a background preparation job.
+        Falling back to ``audio_packet_source.get_audio_packets()`` preserves
+        the existing synchronous API for non-GUI callers.
+        """
 
         if not isinstance(pipeline, Pipeline):
             raise TypeError("pipeline must be a Pipeline")
@@ -107,7 +113,10 @@ class ExplorerModel:
             raise TypeError("chunk_grid must be a CanonicalChunkGrid")
 
         pipeline_hash = pipeline.get_config_hash()
-        audio_packets = audio_packet_source.get_audio_packets()
+        if audio_packets is None:
+            audio_packets = audio_packet_source.get_audio_packets()
+        else:
+            audio_packets = list(audio_packets)
 
         self.pipeline = pipeline
         self.pipeline_name = str(pipeline_name)

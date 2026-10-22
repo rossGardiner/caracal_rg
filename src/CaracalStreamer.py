@@ -75,15 +75,20 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
                 "No syslogs found! Are you sure this is a valid CARACAL data directory?"
             )
             
-    def get_audio_packets(self) -> list[AudioPacket]:
+    def get_audio_packets(self, progress_callback=None) -> list[AudioPacket]:
         """
         Parse the registered CARACAL sessions and return them as
         generic AudioPacket objects.
+
+        ``progress_callback`` is optional and receives ``(completed, total)``
+        after each syslog.  GUI callers can use it as a lightweight heartbeat
+        without coupling this source object to Qt.
         """
 
         packets: list[AudioPacket] = []
+        total_syslogs = len(self.syslog_files)
 
-        for syslog_file in self.syslog_files:
+        for syslog_index, syslog_file in enumerate(self.syslog_files, start=1):
             parser = SyslogParser(
                 syslog_file
             )
@@ -135,6 +140,9 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
                 packets.append(
                     packet
                 )
+
+            if progress_callback is not None:
+                progress_callback((syslog_index, total_syslogs))
 
         return packets
 

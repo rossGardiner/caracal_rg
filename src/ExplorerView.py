@@ -33,9 +33,9 @@ class ExplorerView(QMainWindow):
 
     Explorer domain state lives in ``ExplorerModel`` and asynchronous
     orchestration lives in ``ExplorerController``. ``ExplorerView`` is a
-    QMainWindow used as an embeddable tab page. QMainWindow is itself a QWidget,
-    so the application shell can host it directly while retaining native Qt
-    dock-widget behaviour.
+    QMainWindow used as an embeddable workspace. QMainWindow is itself a
+    QWidget, so the application shell can host it inside a top-level dock while
+    retaining the Explorer's own native dock-widget behaviour.
     """
 
     recording_selected = Signal(int)
