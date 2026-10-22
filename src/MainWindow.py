@@ -41,13 +41,6 @@ class _WorkspaceTitleBar(QWidget):
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title, 1)
 
-        pop_out = QToolButton(self)
-        pop_out.setText("Pop out")
-        pop_out.setToolTip("Open in a separate window (or double-click the title)")
-        pop_out.clicked.connect(detach)
-        layout.addWidget(pop_out)
-        self._pop_out_button = pop_out
-
         close = QToolButton(self)
         close.setText("×")
         close.setToolTip("Hide workspace")
@@ -56,12 +49,7 @@ class _WorkspaceTitleBar(QWidget):
         self._close_button = close
 
     def set_detached(self, detached: bool):
-        """The standalone window has its own OS title bar and close control."""
-        self._pop_out_button.setText("Dock back" if detached else "Pop out")
-        self._pop_out_button.setToolTip(
-            "Return to the main window" if detached
-            else "Open in a separate window (or double-click the title)"
-        )
+        """Hide the dock's close control while in its own window."""
         self._close_button.setVisible(not detached)
 
     def mouseDoubleClickEvent(self, event):
