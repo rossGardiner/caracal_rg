@@ -1,4 +1,9 @@
+from unittest.mock import Mock
+
 import numpy as np
+import numpy.testing as npt
+import pytest
+
 from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
 from src.HighPassFilter import HighPassFilter
@@ -6,72 +11,63 @@ from src.SpeedometerLink import SpeedometerLink
 from src.Resampler import Resampler
 
 
-class DummySink:
-    def __init__(self):
-        self.received = None
-
-    def next_audio(self, packet):
-        self.received = packet
-
-
-def test_simple_pipeline_flow_through_highpass_speedometer_resampler():
-    """
-    Build a tiny pipeline inspired by src/main.py but without CaracalStreamer or
-    file I/O. The chain is:
-      HighPassFilter -> SpeedometerLink -> Resampler -> DummySink
-
-    This verifies a buffer can flow end-to-end, the high-pass filter
-    initializes its state for the packet, and the final sink receives an
-    AudioBuffer with the expected sample rate.
-    """
-    # Create a minimal packet + buffer (mono waveform)
-    packet = AudioPacket()
-
-    waveform = np.ones((160,), dtype=np.float32)  # mono, 160 samples
-    # AudioBuffer expects waveform either (samples,) or (samples, channels)
-    waveform = waveform[:, np.newaxis]
-
-    # add some misc metadata to the packet and verify it propagates
-    packet.misc_metadata = {"tag": "test-pipeline", "score": 0.42}
-
-    buf = AudioBuffer(
+def test_simple_pipeline_filters_resamples_and_delivers_one_buffer():
+    """Exercise real DSP through HighPassFilter -> Speedometer -> Resampler."""
+    source_rate, target_rate = 16000, 32000
+    time_s = np.arange(4000) / source_rate
+    waveform = (
+        0.25 + np.sin(2 * np.pi * 20 * time_s) + 0.5 * np.sin(2 * np.pi * 1000 * time_s)
+    ).astype(np.float32)[:, np.newaxis]
+    original = waveform.copy()
+    waveform.setflags(write=False)
+    packet = AudioPacket(
+        recording_id="recording-pipeline",
+        misc_metadata={"tag": "test-pipeline", "score": 0.42},
+    )
+    source = AudioBuffer(
         packet=packet,
         waveform=waveform,
-        sample_rate=16000,
-        start_offset_s=0.0,
-        valid_samples=waveform.shape[0],
+        sample_rate=source_rate,
+        start_offset_s=35.0,
+        valid_samples=len(waveform),
+        chunk_index=7,
+        embeddings={"existing": {"values": [0.1, 0.2]}},
     )
-
-    # Create pipeline links. Use a Resampler with the same sample rate so
-    # librosa.resample is not invoked during the test (Resampler will forward
-    # unchanged if sample rates match).
-    hpf = HighPassFilter(cutoff_hz=60.0, order=2)
+    highpass = HighPassFilter(cutoff_hz=200, order=4)
     speed = SpeedometerLink(report_interval_s=1000.0)
-    rs = Resampler(target_sample_rate=16000)
+    resampler = Resampler(target_sample_rate=target_rate)
+    sink = Mock()
+    highpass.register_callback(speed)
+    speed.register_callback(resampler)
+    resampler.register_callback(sink)
 
-    sink = DummySink()
+    highpass.next_audio(source)
 
-    # Wire the pipeline: hpf -> speed -> rs -> sink
-    hpf.register_callback(speed)
-    speed.register_callback(rs)
-    rs.register_callback(sink)
-
-    # Invoke the pipeline by passing the AudioBuffer to the first link.
-    hpf.next_audio(buf)
-
-    # Assertions: final sink received a buffer, same sample rate, and highpass
-    # filter recorded the packet id and incremented its counters via
-    # SpeedometerLink. Also ensure packet.misc_metadata propagated unchanged.
-    assert sink.received is not None
-    assert isinstance(sink.received, AudioBuffer)
-    assert sink.received.sample_rate == 16000
-
-    # The buffer's packet should be the same object we created and carry the same misc_metadata
-    assert sink.received.packet is packet
-    assert getattr(sink.received.packet, "misc_metadata", None) == packet.misc_metadata
-
-    # HighPassFilter should have set its current_packet_id to the packet.id
-    assert hpf.current_packet_id == packet.id
-
-    # Speedometer should have accounted for one buffer
+    sink.next_audio.assert_called_once()
+    result = sink.next_audio.call_args.args[0]
+    assert isinstance(result, AudioBuffer)
+    assert result is not source
+    assert result.sample_rate == target_rate
+    assert result.waveform.shape == (8000, 1)
+    assert result.waveform.dtype == np.float32
+    assert result.valid_samples == 8000
+    assert result.valid_samples / result.sample_rate == pytest.approx(0.25)
+    assert result.packet is packet
+    assert result.packet.misc_metadata == {"tag": "test-pipeline", "score": 0.42}
+    assert result.chunk_key == ("recording-pipeline", 7)
+    assert result.start_offset_s == 35.0
+    assert result.embeddings == source.embeddings
+    assert (result.left_context_samples, result.right_context_samples) == (0, 0)
     assert speed.total_buffers == 1
+
+    # Inspect an interior interval after filter warmup and away from resample edges.
+    steady = result.waveform[3200:6400, 0]
+    steady_time = np.arange(3200, 6400) / target_rate
+    low_amplitude = 2 * abs(np.mean(steady * np.exp(-2j * np.pi * 20 * steady_time)))
+    high_amplitude = 2 * abs(np.mean(steady * np.exp(-2j * np.pi * 1000 * steady_time)))
+    assert abs(steady.mean()) < 0.005
+    assert low_amplitude < 0.01
+    assert high_amplitude == pytest.approx(0.5, rel=0.01)
+    npt.assert_array_equal(source.waveform, original)
+    assert source.sample_rate == source_rate
+    assert source.valid_samples == 4000
