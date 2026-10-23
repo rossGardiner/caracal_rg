@@ -510,6 +510,9 @@ class _ReviewSelector:
 
     @staticmethod
     def _take(queue, selected, candidates, count, reason):
+        if count <= 0:
+            return
+
         added = 0
         for _, ref, probability in candidates:
             if ref in selected:
