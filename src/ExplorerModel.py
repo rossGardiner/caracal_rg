@@ -14,18 +14,18 @@ class ExplorerModel:
     objects, signals, background workers, or presentation logic.
     """
 
-    audio_packet_source: AudioPacketSource
-    audio_reader: AudioReader
+    audio_packet_source: AudioPacketSource | None
+    audio_reader: AudioReader | None
     chunk_grid: CanonicalChunkGrid
     embedding_cache: object
-    pipeline: Pipeline
+    pipeline: Pipeline | None
     pipeline_name: str = "Configured pipeline"
     embedding_name: str = "perch_v2"
 
     audio_packets: list = field(
         init=False
     )
-    pipeline_hash: str = field(
+    pipeline_hash: str | None = field(
         init=False
     )
 
@@ -63,7 +63,7 @@ class ExplorerModel:
                 "chunk_grid must be a CanonicalChunkGrid"
             )
 
-        if not isinstance(
+        if self.pipeline is not None and not isinstance(
             self.pipeline,
             Pipeline,
         ):
@@ -75,6 +75,11 @@ class ExplorerModel:
             self.embedding_name
         )
 
+        if self.pipeline is None:
+            self.audio_packets = []
+            self.pipeline_hash = None
+            return
+
         self.audio_packets = (
             self.audio_packet_source.get_audio_packets()
         )
@@ -84,6 +89,19 @@ class ExplorerModel:
         # a different definition in the Explorer.
         self.pipeline_hash = (
             self.pipeline.get_config_hash()
+        )
+
+    @classmethod
+    def empty(cls):
+        """Create the idle GUI state without constructing or reading a pipeline."""
+
+        return cls(
+            audio_packet_source=None,
+            audio_reader=None,
+            chunk_grid=CanonicalChunkGrid(),
+            embedding_cache=None,
+            pipeline=None,
+            pipeline_name="No active pipeline",
         )
 
 

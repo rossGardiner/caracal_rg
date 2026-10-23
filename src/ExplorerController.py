@@ -5,7 +5,6 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from src.AudioBufferLoader import AudioBufferLoader
 from src.AudioReader import AudioReader
-from src.CaracalStreamer import CaracalStreamer
 from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.EmbeddingRequest import EmbeddingRequest
 from src.EmbeddingsCreator import EmbeddingsCreator
@@ -102,9 +101,11 @@ class ExplorerController(QObject):
             self._pipeline_activation_progress
         )
 
-        self.embedding_request = EmbeddingRequest(
-            cache=self.model.embedding_cache,
-            pipeline=self.model.pipeline,
+        self.embedding_request = (
+            None if self.model.pipeline is None else EmbeddingRequest(
+                cache=self.model.embedding_cache,
+                pipeline=self.model.pipeline,
+            )
         )
 
         self.embedding_cache_jobs = LatestJobRunner(
@@ -201,6 +202,8 @@ class ExplorerController(QObject):
         progress_callback=None,
     ) -> _PreparedPipelineActivation:
         """Resolve Explorer services and parse recordings off-thread."""
+
+        from src.CaracalStreamer import CaracalStreamer
 
         source = pipeline.get_link(CaracalStreamer)
         loader = pipeline.get_link(AudioBufferLoader)
@@ -352,6 +355,14 @@ class ExplorerController(QObject):
         """Initialise the explorer selection without doing work in a constructor."""
 
         self.view.set_browsing_controls_enabled(False)
+
+        if self.model.pipeline is None:
+            self.view.set_no_recordings()
+            self.status_changed.emit(
+                "Choose a pipeline in Pipelines, then click Use in Explorer "
+                "to load recordings. Start processes the dataset."
+            )
+            return
 
         if packet_index is None:
             self.view.set_no_recordings()
@@ -519,6 +530,9 @@ class ExplorerController(QObject):
 
     def current_embedding_selection(self):
         """Return the Explorer's current embedding space and selected chunk."""
+
+        if self.model.pipeline_hash is None:
+            return None, None
 
         space = EmbeddingSpaceKey(
             pipeline_hash=self.model.pipeline_hash,

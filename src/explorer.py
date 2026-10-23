@@ -9,14 +9,9 @@ from src.ActiveLearningClassifierStore import ActiveLearningClassifierStore
 from src.ActiveLearningController import ActiveLearningController
 from src.ActiveLearningModel import ActiveLearningModel
 from src.ActiveLearningView import ActiveLearningView
-from src.AudioBufferLoader import AudioBufferLoader
-from src.AudioReader import AudioReader
-from src.CaracalStreamer import CaracalStreamer
 from src.ExplorerController import ExplorerController
 from src.ExplorerView import ExplorerView
-from src.EmbeddingCacheLoader import EmbeddingCacheLoader
 from src.ExplorerModel import ExplorerModel
-from src.EmbeddingsCreator import EmbeddingsCreator
 from src.MainWindow import MainWindow
 from src.PipelineController import PipelineController
 from src.PipelineDefinitions import get_pipeline_definitions
@@ -30,7 +25,7 @@ from src.TerminalView import TerminalView
 
 
 def main():
-    """Open the tabbed application without starting dataset precomputation."""
+    """Open the application idle; build pipelines only after a user action."""
 
     app = QApplication(
         sys.argv
@@ -94,22 +89,6 @@ def main():
         )
         classifier_definitions = ()
 
-    pipeline = pipeline_factory.build(
-        builtin_pipeline_definitions[0]
-    )
-
-    source = pipeline.get_link(
-        CaracalStreamer
-    )
-    loader = pipeline.get_link(
-        AudioBufferLoader
-    )
-    cache_loader = pipeline.get_link(
-        EmbeddingCacheLoader
-    )
-    embeddings_creator = pipeline.get_link(
-        EmbeddingsCreator
-    )
     signal_handler = QtSignalHandler(
         app
     )
@@ -118,19 +97,7 @@ def main():
     # signal handler object is otherwise intentionally unused in Python code.
     _ = signal_handler
 
-    audio_reader = AudioReader(
-        is_caracal=True
-    )
-
-    explorer_model = ExplorerModel(
-        audio_packet_source=source,
-        audio_reader=audio_reader,
-        chunk_grid=loader.chunk_grid,
-        embedding_cache=cache_loader.cache,
-        pipeline=pipeline,
-        pipeline_name=builtin_pipeline_definitions[0].name,
-        embedding_name=embeddings_creator.embedding_name,
-    )
+    explorer_model = ExplorerModel.empty()
 
     explorer_view = ExplorerView(
         model=explorer_model,
@@ -149,8 +116,6 @@ def main():
             definition.name
             for definition in pipeline_definitions
         ),
-        active_pipeline_name=explorer_model.pipeline_name,
-        active_pipeline_hash=explorer_model.pipeline_hash,
     )
     pipeline_view = PipelineView()
     pipeline_runner = PipelineRunner()
@@ -245,10 +210,6 @@ def main():
         terminal_view,
     )
     _ = application_objects
-
-    print(
-        pipeline.get_config_json()
-    )
 
     window.show()
 

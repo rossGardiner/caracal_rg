@@ -260,9 +260,9 @@ class ExplorerView(QMainWindow):
             message
         )
 
-    def set_active_pipeline(self, name: str, pipeline_hash: str):
+    def set_active_pipeline(self, name: str, pipeline_hash: str | None):
         self.active_pipeline_name_value.setText(str(name))
-        self.active_pipeline_hash_value.setText(str(pipeline_hash))
+        self.active_pipeline_hash_value.setText(pipeline_hash or "Not loaded")
 
     def set_audio_packets(self, audio_packets, selected_packet_index=None):
         self.browsing_view.set_audio_packets(
