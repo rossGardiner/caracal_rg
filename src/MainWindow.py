@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QToolBar,
@@ -23,18 +24,19 @@ from src.PipelineView import PipelineView
 
 
 class _WorkspaceTitleBar(QWidget):
-    """Keep native dock dragging; explicitly detach on double-click.
+    """Support native dragging, double-click detaching, and right-click snapping.
 
     Mouse events other than the double-click are ignored so QDockWidget
     continues handling its normal dock-and-split drag gestures.
     """
 
-    def __init__(self, dock: QDockWidget, detach):
+    def __init__(self, dock: QDockWidget, detach, snap):
         super().__init__(dock)
         self._detach = detach
+        self._snap = snap
         self.setObjectName("workspace_title_bar")
         self.setToolTip(
-            "Drag to rearrange docks · Double-click to open a separate window"
+            "Drag to rearrange · Right-click to snap · Double-click to detach"
         )
         self.setCursor(Qt.CursorShape.OpenHandCursor)
 
@@ -71,9 +73,27 @@ class _WorkspaceTitleBar(QWidget):
             else Qt.CursorShape.OpenHandCursor
         )
         self.setToolTip(
-            "Double-click to dock back" if detached
-            else "Drag to rearrange docks · Double-click to open a separate window"
+            "Right-click to snap into the main pane · Double-click to dock back"
+            if detached else
+            "Drag to rearrange · Right-click to snap · Double-click to detach"
         )
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        actions = {
+            menu.addAction(label): area
+            for label, area in (
+                ("Snap to left", Qt.DockWidgetArea.LeftDockWidgetArea),
+                ("Snap to right", Qt.DockWidgetArea.RightDockWidgetArea),
+                ("Snap to top", Qt.DockWidgetArea.TopDockWidgetArea),
+                ("Snap to bottom", Qt.DockWidgetArea.BottomDockWidgetArea),
+            )
+        }
+        selected = menu.exec(event.globalPos())
+        menu.deleteLater()
+        if selected in actions:
+            self._snap(actions[selected])
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -250,7 +270,11 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
         dock.setTitleBarWidget(
-            _WorkspaceTitleBar(dock, lambda d=dock: self._detach_workspace(d))
+            _WorkspaceTitleBar(
+                dock,
+                lambda d=dock: self._detach_workspace(d),
+                lambda area, d=dock: self._snap_workspace(d, area),
+            )
         )
         # A dock's child determines its minimum size. Give the dock a
         # shrinkable scroll area instead of the potentially large MVC view;
@@ -434,6 +458,55 @@ class MainWindow(QMainWindow):
         dock.raise_()
         window.hide()
         window.deleteLater()
+        self._sync_workspace_action(dock)
+
+    def _snap_workspace(self, dock: QDockWidget, area: Qt.DockWidgetArea):
+        """Place one workspace on an outer edge without dragging or recreating it."""
+
+        self._redock_workspace(dock)
+        opposite, corners, orientation = {
+            Qt.DockWidgetArea.LeftDockWidgetArea: (
+                Qt.DockWidgetArea.RightDockWidgetArea,
+                (Qt.Corner.TopLeftCorner, Qt.Corner.BottomLeftCorner),
+                Qt.Orientation.Horizontal,
+            ),
+            Qt.DockWidgetArea.RightDockWidgetArea: (
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                (Qt.Corner.TopRightCorner, Qt.Corner.BottomRightCorner),
+                Qt.Orientation.Horizontal,
+            ),
+            Qt.DockWidgetArea.TopDockWidgetArea: (
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+                (Qt.Corner.TopLeftCorner, Qt.Corner.TopRightCorner),
+                Qt.Orientation.Vertical,
+            ),
+            Qt.DockWidgetArea.BottomDockWidgetArea: (
+                Qt.DockWidgetArea.TopDockWidgetArea,
+                (Qt.Corner.BottomLeftCorner, Qt.Corner.BottomRightCorner),
+                Qt.Orientation.Vertical,
+            ),
+        }[area]
+
+        # Give the requested edge to this workspace. Otherwise Qt may stack
+        # it below/alongside a peer already occupying that same dock area.
+        for peer in self._workspace_docks:
+            if (peer is dock or peer in self._detached_windows
+                    or self.dockWidgetArea(peer) != area):
+                continue
+            hidden = peer.isHidden()
+            self.removeDockWidget(peer)
+            self.addDockWidget(opposite, peer)
+            peer.setVisible(not hidden)
+
+        self.removeDockWidget(dock)
+        dock.setFloating(False)
+        self.addDockWidget(area, dock)
+        for corner in corners:
+            self.setCorner(corner, area)
+        dock.show()
+        dock.raise_()
+        extent = self.width() if orientation == Qt.Orientation.Horizontal else self.height()
+        self.resizeDocks([dock], [max(1, extent // 2)], orientation)
         self._sync_workspace_action(dock)
 
     def reset_workspace_layout(self):
