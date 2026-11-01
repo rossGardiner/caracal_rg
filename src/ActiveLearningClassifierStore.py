@@ -99,6 +99,10 @@ class ActiveLearningClassifierStore:
             weights_only=True,
         )
 
+    def has_model_state(self, classifier_id: str) -> bool:
+        """Cheap readiness check; labelling deletes the previous fitted state."""
+        return self._model_path(classifier_id).is_file()
+
     def save_model_state(self, classifier_id: str, state):
         path = self._model_path(classifier_id)
         path.parent.mkdir(parents=True, exist_ok=True)

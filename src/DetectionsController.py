@@ -103,6 +103,9 @@ class DetectionsController(QObject):
             and active.is_ready
             and not active.round_running
             and active.learner.classifier.is_fitted
+            # Labelling invalidates the persisted weights, even while the
+            # prepared learner still has the old fitted head in memory.
+            and self.classifier_store.has_model_state(self.model.classifier_id)
         )
         self.view.generate_button.setEnabled(bool(can_scan))
         self.view.scan_threshold.setEnabled(not self.model.scanning)
@@ -187,7 +190,7 @@ class DetectionsController(QObject):
     def _page_count(self):
         return (self.model.total + PAGE_SIZE - 1) // PAGE_SIZE
 
-    def _load_page(self, page, *, select_local=0):
+    def _load_page(self, page, *, select_local=0, open_in_explorer=False):
         run = self.model.run
         if run is None:
             return
@@ -209,10 +212,10 @@ class DetectionsController(QObject):
         self.model.set_page(page, rows, total)
         metadata = tuple(self.metadata.resolve(run, detection) for detection in rows)
         self.view.show_page(rows, metadata, selected_row=select_local if rows else None)
-        # QTableView normally emits currentRowChanged for selectRow, but keep
-        # model/details correct even on Qt versions that only update selection.
-        if rows and self.model.selected is None:
-            self.select_row(select_local)
+        if rows:
+            # Refreshing a page, changing filters or reloading metadata must
+            # not trigger playback. Only explicit navigation should do that.
+            self._select_row(select_local, open_in_explorer=open_in_explorer)
         if not rows:
             self.view.show_details(None, None, None)
             self.view.set_navigation(0, total, page, self._page_count())
@@ -229,6 +232,9 @@ class DetectionsController(QObject):
 
     @Slot(int)
     def select_row(self, local_row):
+        self._select_row(local_row, open_in_explorer=True)
+
+    def _select_row(self, local_row, *, open_in_explorer):
         detection = self.model.select_local_row(local_row)
         self.view.set_navigation(
             self.model.position, self.model.total, self.model.page, self._page_count()
@@ -238,9 +244,9 @@ class DetectionsController(QObject):
             return
         metadata = self.metadata.resolve(self.model.run, detection)
         self.view.show_details(self.model.run, detection, metadata)
-        # Selection intentionally opens Explorer when the embedding space matches.
-        # The bridge in explorer.py enforces that constraint a second time.
-        self.open_selected()
+        if open_in_explorer:
+            # The bridge in explorer.py enforces compatibility a second time.
+            self.open_selected()
 
     @Slot()
     def previous(self):
@@ -259,9 +265,13 @@ class DetectionsController(QObject):
             return
         page, local = divmod(target, PAGE_SIZE)
         if page != self.model.page:
-            self._load_page(page, select_local=local)
+            self._load_page(page, select_local=local, open_in_explorer=True)
         else:
             self.view.table.selectRow(local)
+            # A programmatic row selection may not emit currentRowChanged if
+            # Qt already considers the requested row current.
+            if self.model.selected_index != target:
+                self._select_row(local, open_in_explorer=True)
 
     @Slot()
     def open_selected(self):
@@ -277,14 +287,24 @@ class DetectionsController(QObject):
         run = self.model.run
         if run is None:
             return "No detection run selected."
+        if not self.classifier_store.has_model_state(run.classifier_id):
+            provenance = (
+                " No fitted weights are currently saved for this classifier. "
+                "These results are a historical snapshot; retrain before rescanning."
+            )
+        else:
+            provenance = " Saved scans are snapshots; regenerate after retraining."
         if self.metadata.space != run.embedding_space:
             return (
                 "Saved results can be browsed. To inspect audio and full metadata, "
                 "activate the matching pipeline in Explorer "
                 f"({run.embedding_space.embedding_name}, "
-                f"{run.embedding_space.pipeline_hash[:12]}…)."
+                f"{run.embedding_space.pipeline_hash[:12]}…)." + provenance
             )
-        return f"Ready: {self.model.total:,} matching detections. Click a row to open it in Explorer."
+        return (
+            f"Ready: {self.model.total:,} matching detections. "
+            "Click a row to open it in Explorer." + provenance
+        )
 
     def set_explorer_context(self, space, packets, grid):
         """Called after Explorer activates a pipeline, not on each chunk change."""
@@ -311,6 +331,13 @@ class DetectionsController(QObject):
             self.view.show_status("Select and prepare this classifier in Active Learning first.")
             return
         classifier_id = self.model.classifier_id
+        if not self.classifier_store.has_model_state(classifier_id):
+            self.view.show_status(
+                "No saved fitted weights. Run an Active Learning round after "
+                "your latest label changes before generating detections."
+            )
+            self._update_scan_enabled()
+            return
         parameters = active.selected_classifier.classifier_parameters
         corpus = active.corpus
         store = self.store

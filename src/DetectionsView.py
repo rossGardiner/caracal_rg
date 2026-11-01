@@ -1,6 +1,6 @@
 """Qt view for paged detection browsing; no scanning or persistence logic."""
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -78,6 +78,40 @@ class DetectionTableModel(QAbstractTableModel):
         return str(value)
 
 
+class DetectionTableView(QTableView):
+    """Allow keyboard browsing to continue across database page boundaries."""
+
+    previous_at_boundary = Signal()
+    next_at_boundary = Signal()
+    open_at_selection = Signal()
+
+    def keyPressEvent(self, event):
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.MetaModifier
+        ):
+            return super().keyPressEvent(event)
+
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.open_at_selection.emit()
+            event.accept()
+            return
+
+        index = self.currentIndex()
+        count = self.model().rowCount() if self.model() is not None else 0
+        if index.isValid() and count:
+            if event.key() == Qt.Key.Key_Down and index.row() == count - 1:
+                self.next_at_boundary.emit()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Up and index.row() == 0:
+                self.previous_at_boundary.emit()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+
 class DetectionsView(QWidget):
     """Displays detection snapshots and emits user intent to its controller."""
 
@@ -130,8 +164,8 @@ class DetectionsView(QWidget):
         setup.addWidget(QLabel("Show score ≥"), 2, 0)
         self.min_score = QDoubleSpinBox()
         self.min_score.setRange(0.0, 1.0)
-        self.min_score.setDecimals(2)
-        self.min_score.setSingleStep(0.05)
+        self.min_score.setDecimals(3)
+        self.min_score.setSingleStep(0.01)
         setup.addWidget(self.min_score, 2, 1)
         setup.addWidget(QLabel("Recording ID (exact)"), 2, 2)
         self.recording_filter = QLineEdit()
@@ -150,7 +184,7 @@ class DetectionsView(QWidget):
         layout.addWidget(self.count_label)
 
         split = QSplitter(Qt.Orientation.Horizontal)
-        self.table = QTableView()
+        self.table = DetectionTableView()
         self.table.setObjectName("detections_table")
         self.table_model = DetectionTableModel(self.table)
         self.table.setModel(self.table_model)
@@ -170,7 +204,10 @@ class DetectionsView(QWidget):
         self.table.setColumnWidth(6, 90)
         self.table.setColumnWidth(7, 90)
         self.table.setColumnWidth(8, 130)
-        self.table.setToolTip("Click a row to inspect it; click Score or Recording ID to sort")
+        self.table.setToolTip(
+            "Click a row to inspect it; use Up/Down to browse across pages, "
+            "Enter to open in Explorer, or click Score / Recording ID to sort"
+        )
         split.addWidget(self.table)
 
         inspector = QGroupBox("Selected detection")
@@ -216,6 +253,9 @@ class DetectionsView(QWidget):
             lambda current, _: self.detection_row_selected.emit(current.row())
         )
         self.table.doubleClicked.connect(lambda _: self.open_requested.emit())
+        self.table.open_at_selection.connect(self.open_requested)
+        self.table.previous_at_boundary.connect(self.previous_requested)
+        self.table.next_at_boundary.connect(self.next_requested)
         self.table.horizontalHeader().sectionClicked.connect(self._sort_column)
         self.prev_button.clicked.connect(self.previous_requested)
         self.next_button.clicked.connect(self.next_requested)
@@ -266,10 +306,15 @@ class DetectionsView(QWidget):
             self.min_score.setValue(minimum)
 
     def show_page(self, rows, metadata, *, selected_row=None):
-        self.table_model.set_page(rows, metadata)
-        if selected_row is not None and 0 <= selected_row < len(rows):
-            self.table.selectRow(selected_row)
-            self.table.scrollTo(self.table_model.index(selected_row, 0))
+        # Model resets and programmatic selection must not look like a user's
+        # row click. The controller explicitly updates the inspector after
+        # populating the page and only requests audio on user navigation.
+        with QSignalBlocker(self.table.selectionModel()):
+            self.table_model.set_page(rows, metadata)
+            if selected_row is not None and 0 <= selected_row < len(rows):
+                self.table.selectRow(selected_row)
+                self.table.setCurrentIndex(self.table_model.index(selected_row, 0))
+                self.table.scrollTo(self.table_model.index(selected_row, 0))
 
     def set_navigation(self, position, total, page, page_count):
         self.position_label.setText(f"{position:,} / {total:,}   ·   Page {page + 1} / {max(1, page_count)}")

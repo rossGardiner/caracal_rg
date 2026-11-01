@@ -55,6 +55,10 @@ class ExplorerController(QObject):
 
         self.model = model
         self.view = view
+        # Detection browsing may visit hundreds of recordings in sequence.
+        # Rebuild this lookup only when the Explorer dataset changes, rather
+        # than linearly searching every recording for each Next/Previous.
+        self._recording_index_by_id = self._index_recordings(model.audio_packets)
 
         self.view.recording_selected.connect(
             self.recording_selected
@@ -307,6 +311,7 @@ class ExplorerController(QObject):
             embedding_name=prepared.embeddings_creator.embedding_name,
             audio_packets=prepared.audio_packets,
         )
+        self._recording_index_by_id = self._index_recordings(self.model.audio_packets)
         self.embedding_request = prepared.embedding_request
 
         self.model.browsing_buffers = []
@@ -493,11 +498,7 @@ class ExplorerController(QObject):
             self.status_changed.emit("Could not open Active Learning candidate: invalid ref")
             return False
 
-        packet_index = None
-        for index, packet in enumerate(self.model.audio_packets):
-            if str(packet.recording_id) == ref.recording_id:
-                packet_index = index
-                break
+        packet_index = self._recording_index_by_id.get(ref.recording_id)
 
         if packet_index is None:
             self.status_changed.emit(
@@ -527,6 +528,15 @@ class ExplorerController(QObject):
             update_view_selection=True,
         )
         return True
+
+    @staticmethod
+    def _index_recordings(packets):
+        """Match the first occurrence of each ID, as navigation did before."""
+        indices = {}
+        for index, packet in enumerate(packets):
+            if packet.recording_id is not None:
+                indices.setdefault(str(packet.recording_id), index)
+        return indices
 
     def current_embedding_selection(self):
         """Return the Explorer's current embedding space and selected chunk."""
