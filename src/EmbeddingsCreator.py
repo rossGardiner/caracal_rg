@@ -132,11 +132,14 @@ class EmbeddingsCreator(PipelineLink):
             providers = [
                 "CPUExecutionProvider",
             ]
-
+        
         session = ort.InferenceSession(
             str(model_path_object),
             providers=providers,
         )
+        
+        print("Available providers:", ort.get_available_providers())
+        print("Session providers:", session.get_providers())
 
         model_inputs = session.get_inputs()
 
