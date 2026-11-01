@@ -141,8 +141,8 @@ class _DetachedWorkspaceWindow(QMainWindow):
 class MainWindow(QMainWindow):
     """Application shell containing the application's independent MVC views.
 
-    The shell owns layout only. Explorer, pipeline, active-learning, and
-    terminal behaviour remains inside their existing MVC objects.
+    The shell owns layout only. Explorer, pipeline, active-learning,
+    detections, and terminal behaviour remains inside their existing MVC objects.
     """
 
     def __init__(
@@ -152,6 +152,8 @@ class MainWindow(QMainWindow):
         active_learning_view: QWidget | None = None,
         terminal_view: QWidget | None = None,
         parent=None,
+        *,
+        detections_view: QWidget | None = None,
     ):
         super().__init__(parent)
 
@@ -184,10 +186,14 @@ class MainWindow(QMainWindow):
                 "terminal_view must be a QWidget or None"
             )
 
+        if detections_view is not None and not isinstance(detections_view, QWidget):
+            raise TypeError("detections_view must be a QWidget or None")
+
         self.explorer_view = explorer_view
         self.pipeline_view = pipeline_view
         self.active_learning_view = active_learning_view
         self.terminal_view = terminal_view
+        self.detections_view = detections_view
 
         self._view_docks: dict[int, QDockWidget] = {}
         self._workspace_docks: list[QDockWidget] = []
@@ -217,6 +223,14 @@ class MainWindow(QMainWindow):
                 title="Active Learning",
                 object_name="active_learning_workspace_dock",
                 view=self.active_learning_view,
+            )
+
+        self.detections_dock = None
+        if self.detections_view is not None:
+            self.detections_dock = self._add_workspace(
+                title="Detections",
+                object_name="detections_workspace_dock",
+                view=self.detections_view,
             )
 
         self.terminal_dock = None
@@ -547,6 +561,12 @@ class MainWindow(QMainWindow):
             self.splitDockWidget(
                 secondary,
                 self.pipeline_dock,
+                Qt.Orientation.Vertical,
+            )
+        if self.detections_dock is not None and self.detections_dock is not secondary:
+            self.splitDockWidget(
+                secondary,
+                self.detections_dock,
                 Qt.Orientation.Vertical,
             )
         if self.terminal_dock is not None and self.terminal_dock is not secondary:

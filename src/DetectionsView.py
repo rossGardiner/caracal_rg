@@ -1,0 +1,315 @@
+"""Qt view for paged detection browsing; no scanning or persistence logic."""
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDoubleSpinBox,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class DetectionTableModel(QAbstractTableModel):
+    """A fixed-size page of detections, not one widget per corpus chunk."""
+
+    HEADERS = (
+        "Score", "Recording", "Recording ID", "Chunk", "Human label",
+        "Start (s)", "End (s)", "Duration (s)", "Device", "Captured (UTC)",
+    )
+    FIELDS = (
+        "score", "recording", "recording_id", "chunk", "human_label",
+        "start_s", "end_s", "duration_s", "device_id", "capture_start",
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = ()
+        self.metadata = ()
+
+    def set_page(self, rows, metadata):
+        self.beginResetModel()
+        self.rows = tuple(rows)
+        self.metadata = tuple(metadata)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.HEADERS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            return self.HEADERS[section]
+        return section + 1
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or role not in (
+            Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.TextAlignmentRole,
+        ):
+            return None
+        field = self.FIELDS[index.column()]
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return (
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                if field in ("score", "chunk", "start_s", "end_s", "duration_s")
+                else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+        value = self.metadata[index.row()].get(field)
+        if value is None:
+            return "—"
+        if field == "score":
+            return f"{value:.3f}"
+        if field in ("start_s", "end_s", "duration_s"):
+            return f"{value:.2f}"
+        return str(value)
+
+
+class DetectionsView(QWidget):
+    """Displays detection snapshots and emits user intent to its controller."""
+
+    classifier_selected = Signal(str)
+    run_selected = Signal(str)
+    filters_requested = Signal(float, str)
+    sort_requested = Signal(str, bool)
+    page_requested = Signal(int)
+    detection_row_selected = Signal(int)
+    previous_requested = Signal()
+    next_requested = Signal()
+    open_requested = Signal()
+    refresh_requested = Signal()
+    generate_requested = Signal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("detections_workspace")
+        self.setMinimumWidth(0)
+        self._sort_by = "score"
+        self._descending = True
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        setup = QGridLayout()
+        setup.addWidget(QLabel("Classifier"), 0, 0)
+        self.classifier_combo = QComboBox()
+        self.classifier_combo.setObjectName("detections_classifier")
+        setup.addWidget(self.classifier_combo, 0, 1)
+        setup.addWidget(QLabel("Saved scan"), 0, 2)
+        self.run_combo = QComboBox()
+        self.run_combo.setObjectName("detections_run")
+        setup.addWidget(self.run_combo, 0, 3)
+
+        setup.addWidget(QLabel("Scan ≥"), 1, 0)
+        self.scan_threshold = QDoubleSpinBox()
+        self.scan_threshold.setRange(0.0, 1.0)
+        self.scan_threshold.setDecimals(2)
+        self.scan_threshold.setSingleStep(0.05)
+        self.scan_threshold.setValue(0.5)
+        self.scan_threshold.setToolTip("Minimum model score to store in a new scan")
+        setup.addWidget(self.scan_threshold, 1, 1)
+        self.generate_button = QPushButton("Generate detections")
+        setup.addWidget(self.generate_button, 1, 2)
+        self.refresh_button = QPushButton("Refresh saved runs")
+        setup.addWidget(self.refresh_button, 1, 3)
+
+        setup.addWidget(QLabel("Show score ≥"), 2, 0)
+        self.min_score = QDoubleSpinBox()
+        self.min_score.setRange(0.0, 1.0)
+        self.min_score.setDecimals(2)
+        self.min_score.setSingleStep(0.05)
+        setup.addWidget(self.min_score, 2, 1)
+        setup.addWidget(QLabel("Recording ID (exact)"), 2, 2)
+        self.recording_filter = QLineEdit()
+        self.recording_filter.setPlaceholderText("Leave blank for all recordings")
+        setup.addWidget(self.recording_filter, 2, 3)
+        self.apply_button = QPushButton("Apply filters")
+        setup.addWidget(self.apply_button, 2, 4)
+        setup.setColumnStretch(1, 1)
+        setup.setColumnStretch(3, 2)
+        layout.addLayout(setup)
+
+        self.status_label = QLabel("Select a classifier to browse saved detections.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        self.count_label = QLabel("0 detections")
+        layout.addWidget(self.count_label)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        self.table = QTableView()
+        self.table.setObjectName("detections_table")
+        self.table_model = DetectionTableModel(self.table)
+        self.table.setModel(self.table_model)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 70)
+        self.table.setColumnWidth(1, 180)
+        self.table.setColumnWidth(2, 140)
+        self.table.setColumnWidth(3, 65)
+        self.table.setColumnWidth(4, 100)
+        self.table.setColumnWidth(5, 90)
+        self.table.setColumnWidth(6, 90)
+        self.table.setColumnWidth(7, 90)
+        self.table.setColumnWidth(8, 130)
+        self.table.setToolTip("Click a row to inspect it; click Score or Recording ID to sort")
+        split.addWidget(self.table)
+
+        inspector = QGroupBox("Selected detection")
+        inspector_layout = QVBoxLayout(inspector)
+        self.details = QPlainTextEdit()
+        self.details.setObjectName("detection_details")
+        self.details.setReadOnly(True)
+        self.details.setPlainText("Select a result to see its metadata.")
+        inspector_layout.addWidget(self.details)
+        self.open_button = QPushButton("Open in Explorer")
+        inspector_layout.addWidget(self.open_button)
+        split.addWidget(inspector)
+        split.setStretchFactor(0, 4)
+        split.setStretchFactor(1, 1)
+        layout.addWidget(split, 1)
+
+        footer = QHBoxLayout()
+        self.prev_page_button = QPushButton("◀ Page")
+        self.next_page_button = QPushButton("Page ▶")
+        self.prev_button = QPushButton("◀ Previous detection")
+        self.next_button = QPushButton("Next detection ▶")
+        self.position_label = QLabel("0 / 0")
+        footer.addWidget(self.prev_page_button)
+        footer.addWidget(self.prev_button)
+        footer.addWidget(self.position_label, 1, Qt.AlignmentFlag.AlignCenter)
+        footer.addWidget(self.next_button)
+        footer.addWidget(self.next_page_button)
+        layout.addLayout(footer)
+
+        self.classifier_combo.currentIndexChanged.connect(
+            lambda _: self.classifier_selected.emit(self.classifier_combo.currentData() or "")
+        )
+        self.run_combo.currentIndexChanged.connect(
+            lambda _: self.run_selected.emit(self.run_combo.currentData() or "")
+        )
+        self.generate_button.clicked.connect(
+            lambda: self.generate_requested.emit(self.scan_threshold.value())
+        )
+        self.refresh_button.clicked.connect(self.refresh_requested)
+        self.apply_button.clicked.connect(self._apply_filters)
+        self.recording_filter.returnPressed.connect(self._apply_filters)
+        self.table.selectionModel().currentRowChanged.connect(
+            lambda current, _: self.detection_row_selected.emit(current.row())
+        )
+        self.table.doubleClicked.connect(lambda _: self.open_requested.emit())
+        self.table.horizontalHeader().sectionClicked.connect(self._sort_column)
+        self.prev_button.clicked.connect(self.previous_requested)
+        self.next_button.clicked.connect(self.next_requested)
+        self.open_button.clicked.connect(self.open_requested)
+        self.prev_page_button.clicked.connect(lambda: self.page_requested.emit(-1))
+        self.next_page_button.clicked.connect(lambda: self.page_requested.emit(1))
+        self.set_navigation(0, 0, 0, 0)
+        self.generate_button.setEnabled(False)
+        self.set_filters_enabled(False)
+
+    def _apply_filters(self):
+        self.filters_requested.emit(self.min_score.value(), self.recording_filter.text().strip())
+
+    def _sort_column(self, column):
+        new_sort = {0: "score", 2: "recording"}.get(column)
+        if new_sort is None:
+            return
+        descending = (not self._descending) if new_sort == self._sort_by else (new_sort == "score")
+        self._sort_by, self._descending = new_sort, descending
+        self.sort_requested.emit(new_sort, descending)
+
+    def set_classifiers(self, definitions, selected_id):
+        self.classifier_combo.blockSignals(True)
+        self.classifier_combo.clear()
+        self.classifier_combo.addItem("Select classifier", "")
+        for definition in definitions:
+            self.classifier_combo.addItem(definition.name, definition.classifier_id)
+        index = self.classifier_combo.findData(selected_id)
+        self.classifier_combo.setCurrentIndex(max(0, index))
+        self.classifier_combo.blockSignals(False)
+
+    def set_runs(self, runs, selected_id):
+        self.run_combo.blockSignals(True)
+        self.run_combo.clear()
+        for run in runs:
+            name = f"{run.created_at[:19]} · {run.detection_count:,} detections · ≥{run.threshold:.2f}"
+            self.run_combo.addItem(name, run.run_id)
+        index = self.run_combo.findData(selected_id)
+        self.run_combo.setCurrentIndex(max(0, index)) if runs else None
+        self.run_combo.blockSignals(False)
+
+    def set_filters_enabled(self, enabled, minimum=0.0):
+        self.min_score.setEnabled(enabled)
+        self.recording_filter.setEnabled(enabled)
+        self.apply_button.setEnabled(enabled)
+        self.min_score.setMinimum(minimum)
+        if self.min_score.value() < minimum:
+            self.min_score.setValue(minimum)
+
+    def show_page(self, rows, metadata, *, selected_row=None):
+        self.table_model.set_page(rows, metadata)
+        if selected_row is not None and 0 <= selected_row < len(rows):
+            self.table.selectRow(selected_row)
+            self.table.scrollTo(self.table_model.index(selected_row, 0))
+
+    def set_navigation(self, position, total, page, page_count):
+        self.position_label.setText(f"{position:,} / {total:,}   ·   Page {page + 1} / {max(1, page_count)}")
+        self.count_label.setText(f"{total:,} matching detections")
+        self.prev_button.setEnabled(position > 1)
+        self.next_button.setEnabled(0 < position < total)
+        self.prev_page_button.setEnabled(page > 0)
+        self.next_page_button.setEnabled(page + 1 < page_count)
+        self.open_button.setEnabled(position > 0)
+
+    def show_details(self, run, detection, metadata):
+        if run is None or detection is None or metadata is None:
+            self.details.setPlainText("Select a result to see its metadata.")
+            return
+        lines = [
+            f"Recording: {metadata['recording']}",
+            f"Recording ID: {detection.ref.recording_id}",
+            f"Chunk: {detection.ref.chunk_index}",
+            f"Score: {detection.score:.4f}",
+            f"Human label: {metadata['human_label']}",
+        ]
+        for label, field in (
+            ("Start (s)", "start_s"), ("End (s)", "end_s"),
+            ("Duration (s)", "duration_s"), ("Device ID", "device_id"),
+            ("Card ID", "card_id"), ("Latitude", "latitude"),
+            ("Longitude", "longitude"), ("Capture time (UTC)", "capture_start"),
+        ):
+            value = metadata.get(field)
+            lines.append(f"{label}: {value if value is not None else '—'}")
+        lines.extend((
+            "", "Prediction provenance:",
+            f"Classifier: {run.classifier_id}",
+            f"Model version: {run.model_id[:16]}…",
+            f"Pipeline hash: {run.embedding_space.pipeline_hash}",
+            f"Embedding: {run.embedding_space.embedding_name}",
+            f"Scanned: {run.scored_count:,} embeddings",
+            f"Scan cutoff: {run.threshold:.2f}",
+            f"Scan date: {run.created_at}",
+        ))
+        self.details.setPlainText("\n".join(lines))
+
+    def show_status(self, message):
+        self.status_label.setText(message)

@@ -56,6 +56,7 @@ class ActiveLearningController(QObject):
     """
 
     open_example_requested = Signal(object)
+    workspace_state_changed = Signal()  # selected/updated classifier info for Detections
 
     def __init__(
         self,
@@ -629,6 +630,7 @@ class ActiveLearningController(QObject):
 
     def refresh_view(self):
         self.view.render(self.model)
+        self.workspace_state_changed.emit()
 
     def shutdown(self):
         self.prepare_jobs.shutdown()

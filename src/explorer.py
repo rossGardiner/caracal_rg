@@ -10,6 +10,10 @@ from src.ActiveLearningController import ActiveLearningController
 from src.ActiveLearningModel import ActiveLearningModel
 from src.ActiveLearningView import ActiveLearningView
 from src.ExplorerController import ExplorerController
+from src.DetectionStore import DetectionStore
+from src.DetectionsModel import DetectionsModel
+from src.DetectionsView import DetectionsView
+from src.DetectionsController import DetectionsController
 from src.ExplorerView import ExplorerView
 from src.ExplorerModel import ExplorerModel
 from src.MainWindow import MainWindow
@@ -170,10 +174,37 @@ def main():
         pipeline_controller.pipeline_activation_failed
     )
 
+    detections_model = DetectionsModel()
+    detections_view = DetectionsView()
+    detections_store = DetectionStore()
+    detections_controller = DetectionsController(
+        model=detections_model,
+        view=detections_view,
+        store=detections_store,
+        active_learning_model=active_learning_model,
+        classifier_store=classifier_store,
+        parent=detections_view,
+    )
+    active_learning_controller.workspace_state_changed.connect(
+        detections_controller.refresh_from_active_learning
+    )
+
+    def refresh_detection_recordings(*_args):
+        space, _ref = explorer_controller.current_embedding_selection()
+        detections_controller.set_explorer_context(
+            space, explorer_model.audio_packets, explorer_model.chunk_grid
+        )
+
+    explorer_controller.pipeline_activation_succeeded.connect(
+        refresh_detection_recordings
+    )
+    refresh_detection_recordings()
+
     window = MainWindow(
         explorer_view=explorer_view,
         pipeline_view=pipeline_view,
         active_learning_view=active_learning_view,
+        detections_view=detections_view,
         terminal_view=terminal_view,
     )
 
@@ -185,9 +216,28 @@ def main():
         open_active_learning_example
     )
 
+    def open_detection(space, ref):
+        current_space, _ref = explorer_controller.current_embedding_selection()
+        if current_space != space:
+            detections_view.show_status(
+                "Explorer is using an incompatible pipeline. Activate the "
+                "matching pipeline before opening this detection."
+            )
+            return
+        if explorer_controller.navigate_to_embedding(ref):
+            # Deliberately leave keyboard focus in Detections for Next/Previous.
+            window.explorer_dock.show()
+        else:
+            detections_view.show_status(
+                "Explorer could not open this recording/chunk. Check the active dataset."
+            )
+
+    detections_controller.open_detection_requested.connect(open_detection)
+
     app.aboutToQuit.connect(
         explorer_controller.shutdown
     )
+    app.aboutToQuit.connect(detections_controller.shutdown)
     app.aboutToQuit.connect(
         pipeline_controller.shutdown
     )
@@ -207,6 +257,9 @@ def main():
         pipeline_controller,
         active_learning_model,
         active_learning_controller,
+        detections_model,
+        detections_controller,
+        detections_store,
         terminal_view,
     )
     _ = application_objects
