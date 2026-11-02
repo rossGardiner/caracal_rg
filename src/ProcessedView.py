@@ -1,4 +1,5 @@
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -36,8 +37,7 @@ class ProcessedView(QWidget):
     """
 
     buffer_selected = Signal(int)
-    play_requested = Signal()
-    stop_requested = Signal()
+    playback_toggle_requested = Signal()
     volume_changed = Signal(int)
 
     def __init__(
@@ -99,24 +99,20 @@ class ProcessedView(QWidget):
         # Processed playback controls
         # ==================================================
 
-        self.play_button = QPushButton(
-            "Play processed"
+        # Same one-button Play/Stop interaction as Quick Review and Source.
+        self.play_button = QPushButton("▶ Play / Stop  [Space]")
+        self.play_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.play_button.clicked.connect(self._play_button_clicked)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._playback_shortcut = QShortcut(QKeySequence("Space"), self)
+        self._playback_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
-
-        self.play_button.clicked.connect(
-            self.play_requested.emit
-        )
-
-        self.stop_button = QPushButton(
-            "Stop"
-        )
-
-        self.stop_button.clicked.connect(
-            self.stop_requested.emit
-        )
+        self._playback_shortcut.setAutoRepeat(False)
+        self._playback_shortcut.activated.connect(self._request_playback_toggle)
 
         self.volume_label = QLabel(
-            "Volume: 100%"
+            "Volume: 80%"
         )
 
         self.volume_slider = QSlider(
@@ -125,11 +121,11 @@ class ProcessedView(QWidget):
 
         self.volume_slider.setRange(
             0,
-            500,
+            100,
         )
 
         self.volume_slider.setValue(
-            100
+            80
         )
 
         self.volume_slider.setSingleStep(
@@ -148,14 +144,11 @@ class ProcessedView(QWidget):
             self._volume_changed
         )
 
+
         playback_row = QHBoxLayout()
 
         playback_row.addWidget(
             self.play_button
-        )
-
-        playback_row.addWidget(
-            self.stop_button
         )
 
         playback_row.addSpacing(
@@ -170,6 +163,7 @@ class ProcessedView(QWidget):
             self.volume_slider,
             1,
         )
+
 
         # ==================================================
         # Embeddings
@@ -349,13 +343,22 @@ class ProcessedView(QWidget):
         self,
         enabled,
     ):
-        self.play_button.setEnabled(
-            enabled
+        self.play_button.setEnabled(enabled)
+        self._playback_shortcut.setEnabled(enabled)
+
+    def set_playback_active(self, active: bool):
+        """Reflect the shared Explorer audio sink in this pane."""
+        self.play_button.setText(
+            "■ Stop  [Space]" if active else "▶ Play / Stop  [Space]"
         )
 
-        self.stop_button.setEnabled(
-            enabled
-        )
+    def _play_button_clicked(self):
+        self.setFocus()
+        self._request_playback_toggle()
+
+    def _request_playback_toggle(self):
+        if self.play_button.isEnabled():
+            self.playback_toggle_requested.emit()
 
     def volume_percent(
         self,

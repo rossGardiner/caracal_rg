@@ -1,13 +1,12 @@
 """Non-modal, keyboard-first pop-out for rapid active-learning review."""
 
-import numpy as np
-
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
 
 from src.Spectrogram import Spectrogram
+from src.PlaybackAudio import prepare_playback
 
 
 class QuickReviewView(QWidget):
@@ -39,6 +38,14 @@ class QuickReviewView(QWidget):
         self.spectrogram = Spectrogram(self)
         self.status_label = QLabel("Open a review queue to begin.")
         self.status_label.setWordWrap(True)
+        self.volume_label = QLabel("Volume: 80%")
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(80)
+        # Keep P/N/S/Space/Left review shortcuts active after using the slider.
+        self.volume_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.volume_slider.setToolTip("Adjust playback volume while listening; automatic levelling is always on")
+        self.volume_slider.valueChanged.connect(self._volume_changed)
 
         self.play_button = QPushButton("▶ Play / Stop  [Space]")
         self.positive_button = QPushButton("✓ Positive  [P]")
@@ -89,6 +96,10 @@ class QuickReviewView(QWidget):
         layout.addWidget(self.position_label)
         layout.addWidget(self.spectrogram, 1)
         layout.addWidget(self.status_label)
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(self.volume_label)
+        volume_row.addWidget(self.volume_slider, 1)
+        layout.addLayout(volume_row)
         layout.addLayout(action_row)
         self.clear_chunk("No review candidate", can_skip=False)
         self.set_back_enabled(False)
@@ -146,14 +157,14 @@ class QuickReviewView(QWidget):
             return
 
         buffer = self._audio_chunk.audio_buffer
-        waveform = np.asarray(buffer.waveform, dtype=np.float32)
-        if waveform.ndim == 1:
-            waveform = waveform[:, None]
-        if waveform.ndim != 2 or waveform.shape[0] == 0:
-            self.status_label.setText("Cannot play an empty audio chunk")
+        try:
+            prepared = prepare_playback(
+                buffer.waveform,
+            )
+        except ValueError as exc:
+            self.status_label.setText(f"Cannot play audio: {exc}")
             return
-
-        waveform = np.ascontiguousarray(np.clip(waveform, -1.0, 1.0))
+        waveform = prepared.waveform
         audio_format = QAudioFormat()
         audio_format.setSampleRate(int(buffer.sample_rate))
         audio_format.setChannelCount(int(waveform.shape[1]))
@@ -167,9 +178,17 @@ class QuickReviewView(QWidget):
         self._audio_buffer.setData(QByteArray(waveform.tobytes()))
         self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
         self._audio_sink = QAudioSink(device, audio_format, self)
+        self._audio_sink.setVolume(self.volume_slider.value() / 100.0)
         self._audio_sink.stateChanged.connect(self._audio_state_changed)
         self._audio_sink.start(self._audio_buffer)
         self.play_button.setText("■ Stop  [Space]")
+        if prepared.peak_limited:
+            self.status_label.setText("Playing · listening gain reduced to prevent clipping")
+
+    def _volume_changed(self, value: int):
+        self.volume_label.setText(f"Volume: {value}%")
+        if self._audio_sink is not None:
+            self._audio_sink.setVolume(value / 100.0)
 
     def _audio_state_changed(self, state):
         if state == QAudio.State.IdleState:

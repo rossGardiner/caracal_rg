@@ -3,6 +3,8 @@ from PySide6.QtCore import (
     Qt,
 )
 
+from PySide6.QtGui import QKeySequence, QShortcut
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -35,8 +37,7 @@ class BrowsingView(QWidget):
 
     recording_selected = Signal(int)
     chunk_selected = Signal(int)
-    play_requested = Signal()
-    stop_requested = Signal()
+    playback_toggle_requested = Signal()
     volume_changed = Signal(int)
 
     def __init__(
@@ -109,24 +110,21 @@ class BrowsingView(QWidget):
         # Playback controls
         # ==================================================
 
-        self.play_button = QPushButton(
-            "Play"
+        # Match Quick Review: one button toggles playback and Space works
+        # while this Explorer pane (or one of its children) has focus.
+        self.play_button = QPushButton("▶ Play / Stop  [Space]")
+        self.play_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.play_button.clicked.connect(self._play_button_clicked)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._playback_shortcut = QShortcut(QKeySequence("Space"), self)
+        self._playback_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
-
-        self.play_button.clicked.connect(
-            self.play_requested.emit
-        )
-
-        self.stop_button = QPushButton(
-            "Stop"
-        )
-
-        self.stop_button.clicked.connect(
-            self.stop_requested.emit
-        )
+        self._playback_shortcut.setAutoRepeat(False)
+        self._playback_shortcut.activated.connect(self._request_playback_toggle)
 
         self.volume_label = QLabel(
-            "Volume: 100%"
+            "Volume: 80%"
         )
 
         self.volume_slider = QSlider(
@@ -135,11 +133,11 @@ class BrowsingView(QWidget):
 
         self.volume_slider.setRange(
             0,
-            500,
+            100,
         )
 
         self.volume_slider.setValue(
-            100
+            80
         )
 
         self.volume_slider.setSingleStep(
@@ -157,6 +155,7 @@ class BrowsingView(QWidget):
         self.volume_slider.valueChanged.connect(
             self._volume_changed
         )
+
 
         # ==================================================
         # Control rows
@@ -194,10 +193,6 @@ class BrowsingView(QWidget):
             self.play_button
         )
 
-        playback_row.addWidget(
-            self.stop_button
-        )
-
         playback_row.addSpacing(
             12
         )
@@ -210,6 +205,7 @@ class BrowsingView(QWidget):
             self.volume_slider,
             1,
         )
+
 
         # ==================================================
         # Layout
@@ -376,13 +372,24 @@ class BrowsingView(QWidget):
         self,
         enabled,
     ):
-        self.play_button.setEnabled(
-            enabled
+        self.play_button.setEnabled(enabled)
+        self._playback_shortcut.setEnabled(enabled)
+
+    def set_playback_active(self, active: bool):
+        """Reflect the single shared Explorer audio sink in this pane."""
+        self.play_button.setText(
+            "■ Stop  [Space]" if active else "▶ Play / Stop  [Space]"
         )
 
-        self.stop_button.setEnabled(
-            enabled
-        )
+    def _play_button_clicked(self):
+        # Restore focus to this pane so Space still controls this source,
+        # even if the other Explorer pane was focused previously.
+        self.setFocus()
+        self._request_playback_toggle()
+
+    def _request_playback_toggle(self):
+        if self.play_button.isEnabled():
+            self.playback_toggle_requested.emit()
 
     def set_no_recordings(
         self,

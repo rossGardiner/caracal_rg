@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from PySide6.QtMultimedia import (
+    QAudio,
     QAudioFormat,
     QAudioSink,
     QMediaDevices,
@@ -26,6 +27,7 @@ from PySide6.QtMultimedia import (
 from src.BrowsingView import BrowsingView
 from src.ExplorerModel import ExplorerModel
 from src.ProcessedView import ProcessedView
+from src.PlaybackAudio import prepare_playback
 
 
 class ExplorerView(QMainWindow):
@@ -112,21 +114,21 @@ class ExplorerView(QMainWindow):
         self.browsing_view.chunk_selected.connect(
             self.chunk_selected.emit
         )
-        self.browsing_view.play_requested.connect(
-            self.play_audio
+        self.browsing_view.playback_toggle_requested.connect(
+            self.toggle_browsing_playback
         )
-        self.browsing_view.stop_requested.connect(
-            self.stop_browsing_audio
+        self.browsing_view.volume_changed.connect(
+            lambda value: self._set_playback_volume("browsing", value)
         )
 
         self.processed_view.buffer_selected.connect(
             self.processed_buffer_selected.emit
         )
-        self.processed_view.play_requested.connect(
-            self.play_processed_audio
+        self.processed_view.playback_toggle_requested.connect(
+            self.toggle_processed_playback
         )
-        self.processed_view.stop_requested.connect(
-            self.stop_processed_audio
+        self.processed_view.volume_changed.connect(
+            lambda value: self._set_playback_volume("processed", value)
         )
 
         # ==================================================
@@ -420,6 +422,20 @@ class ExplorerView(QMainWindow):
     # Playback
     # ======================================================
 
+    def toggle_browsing_playback(self):
+        """Play or stop source audio, like the Quick Review toggle."""
+        if self._audio_sink is not None and self._playback_source == "browsing":
+            self.stop_audio()
+        else:
+            self.play_audio()
+
+    def toggle_processed_playback(self):
+        """Play or stop the selected processed buffer."""
+        if self._audio_sink is not None and self._playback_source == "processed":
+            self.stop_audio()
+        else:
+            self.play_processed_audio()
+
     def play_audio(
         self,
     ):
@@ -480,22 +496,15 @@ class ExplorerView(QMainWindow):
 
         self.stop_audio()
 
-        waveform = np.array(
-            waveform,
-            dtype=np.float32,
-            copy=True,
-        )
+        try:
+            prepared = prepare_playback(
+                waveform,
+            )
+        except ValueError as exc:
+            self.status_bar.showMessage(f"Cannot play audio: {exc}")
+            return
+        waveform = prepared.waveform
         channel_count = waveform.shape[1]
-
-        waveform *= float(volume_percent) / 100.0
-        waveform = np.clip(
-            waveform,
-            -1.0,
-            1.0,
-        )
-        waveform = np.ascontiguousarray(
-            waveform
-        )
 
         audio_format = QAudioFormat()
         audio_format.setSampleRate(
@@ -538,13 +547,21 @@ class ExplorerView(QMainWindow):
             self,
         )
         self._audio_sink.setVolume(
-            1.0
+            volume_percent / 100.0
         )
-        self._audio_sink.start(
-            self._audio_buffer
+        # A recording ending naturally must restore the Play button.
+        # Ignore state changes from an old sink after switching panels.
+        sink = self._audio_sink
+        sink.stateChanged.connect(
+            lambda state, current_sink=sink: self._audio_state_changed(
+                state, current_sink
+            )
         )
-
         self._playback_source = playback_source
+        sink.start(self._audio_buffer)
+        if self._audio_sink is not sink:
+            return
+        self._sync_playback_buttons()
 
         duration = len(waveform) / sample_rate
         self.status_bar.showMessage(
@@ -552,7 +569,29 @@ class ExplorerView(QMainWindow):
             f" | {duration:.2f}s"
             f" | {sample_rate} Hz"
             f" | volume {volume_percent}%"
+            f" | auto level"
+            f"{' | peak protected' if prepared.peak_limited else ''}"
         )
+
+    def _audio_state_changed(self, state, sink):
+        if sink is self._audio_sink and state in (
+            QAudio.State.IdleState,
+            QAudio.State.StoppedState,
+        ):
+            self.stop_audio()
+
+    def _sync_playback_buttons(self):
+        self.browsing_view.set_playback_active(
+            self._audio_sink is not None and self._playback_source == "browsing"
+        )
+        self.processed_view.set_playback_active(
+            self._audio_sink is not None and self._playback_source == "processed"
+        )
+
+    def _set_playback_volume(self, source: str, percent: int):
+        """Apply listener volume immediately, only to the playing source."""
+        if self._audio_sink is not None and self._playback_source == source:
+            self._audio_sink.setVolume(percent / 100.0)
 
     def stop_browsing_audio(
         self,
@@ -579,9 +618,11 @@ class ExplorerView(QMainWindow):
         self,
     ):
         if self._audio_sink is not None:
-            self._audio_sink.reset()
-            self._audio_sink.deleteLater()
+            # Clear first: reset() can synchronously emit StoppedState.
+            sink = self._audio_sink
             self._audio_sink = None
+            sink.reset()
+            sink.deleteLater()
 
         if self._audio_buffer is not None:
             self._audio_buffer.close()
@@ -589,6 +630,7 @@ class ExplorerView(QMainWindow):
             self._audio_buffer = None
 
         self._playback_source = None
+        self._sync_playback_buttons()
 
     # ======================================================
     # Cleanup
