@@ -20,6 +20,7 @@ class QuickReviewView(QWidget):
     positive_requested = Signal()
     negative_requested = Signal()
     skip_requested = Signal()
+    back_requested = Signal()
     closed = Signal()
 
     def __init__(self, parent=None):
@@ -43,11 +44,17 @@ class QuickReviewView(QWidget):
         self.positive_button = QPushButton("✓ Positive  [P]")
         self.negative_button = QPushButton("✗ Negative  [N]")
         self.skip_button = QPushButton("Skip  [S]")
+        self.back_button = QPushButton("← Back  [B / ←]")
+        self.back_button.setToolTip("Revisit the previous item without changing its label")
+        self.skip_button.setToolTip(
+            "Leave this item unlabelled; clears a previous label when revisiting"
+        )
 
         self.play_button.clicked.connect(self.toggle_playback)
         self.positive_button.clicked.connect(self.positive_requested.emit)
         self.negative_button.clicked.connect(self.negative_requested.emit)
         self.skip_button.clicked.connect(self.skip_requested.emit)
+        self.back_button.clicked.connect(self.back_requested.emit)
 
         self._shortcuts = []
         for sequence, callback in (
@@ -55,6 +62,8 @@ class QuickReviewView(QWidget):
             ("P", self.positive_requested.emit),
             ("N", self.negative_requested.emit),
             ("S", self.skip_requested.emit),
+            ("B", self.back_requested.emit),
+            ("Left", self.back_requested.emit),
         ):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -65,14 +74,14 @@ class QuickReviewView(QWidget):
         # Ensure Space only activates its shortcut, not a focused push button.
         for button in (
             self.play_button, self.positive_button,
-            self.negative_button, self.skip_button,
+            self.negative_button, self.skip_button, self.back_button,
         ):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         action_row = QHBoxLayout()
         for button in (
             self.play_button, self.positive_button,
-            self.negative_button, self.skip_button,
+            self.negative_button, self.skip_button, self.back_button,
         ):
             action_row.addWidget(button)
 
@@ -82,6 +91,7 @@ class QuickReviewView(QWidget):
         layout.addWidget(self.status_label)
         layout.addLayout(action_row)
         self.clear_chunk("No review candidate", can_skip=False)
+        self.set_back_enabled(False)
 
     def set_candidate_summary(self, text: str):
         self.position_label.setText(text)
@@ -113,9 +123,18 @@ class QuickReviewView(QWidget):
         self.skip_button.setEnabled(True)
         self._set_shortcut_enabled(can_play=True, can_label=True, can_skip=True)
 
+    def set_back_enabled(self, enabled: bool):
+        """Allow Back from the end-of-queue state, even with no audio loaded."""
+        self.back_button.setEnabled(enabled)
+        # The final two shortcuts are B and Left; both navigate backwards.
+        for shortcut in self._shortcuts[-2:]:
+            shortcut.setEnabled(enabled)
+
     def _set_shortcut_enabled(self, *, can_play, can_label, can_skip):
+        # Only audio and disposition actions depend on whether audio is loaded.
+        # Back is controlled separately so it works at the end of the queue.
         for shortcut, enabled in zip(
-            self._shortcuts, (can_play, can_label, can_label, can_skip)
+            self._shortcuts[:4], (can_play, can_label, can_label, can_skip)
         ):
             shortcut.setEnabled(enabled)
 

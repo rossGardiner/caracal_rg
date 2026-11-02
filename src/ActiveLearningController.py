@@ -428,6 +428,26 @@ class ActiveLearningController(QObject):
         self.refresh_view()
 
     @Slot()
+    def skip_current_candidate_as_unlabelled(self):
+        """Skip in Quick Review, clearing an accidental earlier label.
+
+        Going Back alone never changes labels. If the reviewer returns to a
+        labelled example and then chooses Skip, it should become unlabelled
+        rather than silently keeping its previous Positive/Negative choice.
+        """
+        if self.model.round_running or not self.model.is_ready:
+            return
+        candidate = self.model.current_candidate
+        if candidate is None or self.model.learner is None:
+            return
+        if self.model.learner.label_for(candidate.ref) is not None:
+            self.model.learner.remove_label(candidate.ref)
+            self._persist_runtime_labels()
+        self.model.mark_current_candidate_skipped()
+        self.model.round_error = None
+        self.refresh_view()
+
+    @Slot()
     def previous_candidate(self):
         if self.model.round_running:
             return

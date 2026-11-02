@@ -33,6 +33,7 @@ class QuickReviewController(QObject):
         self.view.positive_requested.connect(self.label_positive)
         self.view.negative_requested.connect(self.label_negative)
         self.view.skip_requested.connect(self.skip)
+        self.view.back_requested.connect(self.back)
         self.view.closed.connect(self._window_closed)
         self.active_learning.workspace_state_changed.connect(self.refresh)
         self.explorer.pipeline_activation_succeeded.connect(
@@ -50,6 +51,10 @@ class QuickReviewController(QObject):
         if not self.view.isVisible():
             return
         model = self.active_learning.model
+        self.view.set_back_enabled(
+            model.is_ready and not model.round_running
+            and model.can_go_previous_candidate
+        )
         candidate = model.current_candidate
         if candidate is None or model.round_running or not model.is_ready:
             self._reset_selection()
@@ -64,10 +69,17 @@ class QuickReviewController(QObject):
             return
 
         position = model.review_position
+        label = model.current_candidate_label
+        if label is not None:
+            disposition = f"Label: {label.name.title()}"
+        elif model.current_candidate_is_skipped:
+            disposition = "Skipped"
+        else:
+            disposition = "Unreviewed"
         self.view.set_candidate_summary(
             f"Candidate {position[0]} / {position[1]}  ·  "
             f"{candidate.ref.recording_id}  ·  chunk {candidate.ref.chunk_index}  ·  "
-            f"score {candidate.probability:.3f}"
+            f"score {candidate.probability:.3f}  ·  {disposition}"
         )
         space, _ = self.explorer.current_embedding_selection()
         explorer_model = self.explorer.model
@@ -155,7 +167,17 @@ class QuickReviewController(QObject):
     @Slot()
     def skip(self):
         if self.view.isVisible():
-            self.active_learning.skip_current_candidate()
+            # Unlike merely stepping past an already-labelled queue entry,
+            # Quick Review Skip means "leave this example unlabelled".
+            self.active_learning.skip_current_candidate_as_unlabelled()
+
+    @Slot()
+    def back(self):
+        model = self.active_learning.model
+        if (self.view.isVisible() and model.is_ready
+                and not model.round_running and model.can_go_previous_candidate):
+            # Do not clear a label just because the user revisits an example.
+            self.active_learning.previous_candidate()
 
     @Slot()
     def _window_closed(self):
