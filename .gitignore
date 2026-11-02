@@ -10,6 +10,10 @@
 !test/**/
 !test/**/*.py
 
+!wiki/
+!wiki/**/
+!wiki/**/*.md
+
 !.git
 !.github/
 !.github/**
