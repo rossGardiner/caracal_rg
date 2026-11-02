@@ -44,12 +44,18 @@ class DetectionMetadata:
             "latitude": None,
             "longitude": None,
             "capture_start": None,
+            "source_status": "Matching pipeline not active in Explorer",
         }
-        if self.space != run.embedding_space or self.grid is None:
+        if self.space != run.embedding_space:
+            return result
+        if self.grid is None:
+            result["source_status"] = "Explorer has no active chunk grid"
             return result
         packet = self._packets.get(detection.ref.recording_id)
         if packet is None:
+            result["source_status"] = "Recording not present in Explorer's active dataset"
             return result
+        result["source_status"] = "Chunk unavailable in the current recording"
 
         result["recording"] = packet.display_name or detection.ref.recording_id
         if isinstance(self.grid, CanonicalChunkGrid):
@@ -58,6 +64,7 @@ class DetectionMetadata:
                     detection.ref.chunk_index, packet.duration
                 )
                 result.update(start_s=start, end_s=end, duration_s=end - start)
+                result["source_status"] = "Chunk reference resolves in Explorer"
             except (ValueError, IndexError, TypeError):
                 pass
 

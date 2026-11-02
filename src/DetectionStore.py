@@ -185,27 +185,59 @@ class DetectionStore:
         """Return one deterministic page, without loading the full result set."""
         limit, offset = self._page(limit, offset)
         where, parameters = self._filters(run_id, min_score, recording_id)
-        if sort_by not in ("score", "recording"):
-            raise ValueError("sort_by must be 'score' or 'recording'")
-        direction = "DESC" if descending else "ASC"
-        if sort_by == "score":
-            order = f"score {direction}, recording_id ASC, chunk_index ASC"
-        else:
-            order = f"recording_id {direction}, chunk_index ASC, score DESC"
+        order = self._order_by(sort_by, descending)
         query = (
             "SELECT run_id, recording_id, chunk_index, score FROM detections"
             + where + " ORDER BY " + order + " LIMIT ? OFFSET ?"
         )
         with self._connect() as connection:
             rows = connection.execute(query, (*parameters, limit, offset)).fetchall()
-        return tuple(
-            Detection(
-                run_id=row["run_id"],
-                ref=EmbeddingRef(row["recording_id"], row["chunk_index"]),
-                score=row["score"],
-            )
-            for row in rows
+        return tuple(self._detection_from_row(row) for row in rows)
+
+    def iter_detections(
+        self, run_id, *, min_score=None, recording_id=None,
+        sort_by="score", descending=True, batch_size=1000,
+    ):
+        """Stream the complete matching result set using bounded fetches.
+
+        A single SQLite read cursor keeps the export on a consistent snapshot.
+        Unlike paging through LIMIT/OFFSET, export time does not grow with
+        increasingly large offsets.
+        """
+        batch_size = int(batch_size)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        where, parameters = self._filters(run_id, min_score, recording_id)
+        order = self._order_by(sort_by, descending)
+        query = (
+            "SELECT run_id, recording_id, chunk_index, score FROM detections"
+            + where + " ORDER BY " + order
         )
+        with self._connect() as connection:
+            cursor = connection.execute(query, parameters)
+            while True:
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield self._detection_from_row(row)
+
+    @staticmethod
+    def _detection_from_row(row):
+        return Detection(
+            run_id=row["run_id"],
+            ref=EmbeddingRef(row["recording_id"], row["chunk_index"]),
+            score=row["score"],
+        )
+
+    @staticmethod
+    def _order_by(sort_by, descending):
+        if sort_by not in ("score", "recording"):
+            raise ValueError("sort_by must be 'score' or 'recording'")
+        direction = "DESC" if descending else "ASC"
+        if sort_by == "score":
+            return f"score {direction}, recording_id ASC, chunk_index ASC"
+        return f"recording_id {direction}, chunk_index ASC, score DESC"
 
     @staticmethod
     def _page(limit, offset):

@@ -103,6 +103,18 @@ class ActiveLearningClassifierStore:
         """Cheap readiness check; labelling deletes the previous fitted state."""
         return self._model_path(classifier_id).is_file()
 
+    def model_state_signature(self, classifier_id: str):
+        """Cheap change token; only used to decide when to rehash saved weights.
+
+        This token is NOT a model identity. The worker computes the actual
+        SHA-256 fingerprint of the saved state and classifier configuration.
+        """
+        try:
+            stat = self._model_path(classifier_id).stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def save_model_state(self, classifier_id: str, state):
         path = self._model_path(classifier_id)
         path.parent.mkdir(parents=True, exist_ok=True)

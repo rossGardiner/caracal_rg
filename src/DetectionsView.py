@@ -1,10 +1,15 @@
 """Qt view for paged detection browsing; no scanning or persistence logic."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -13,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QTableView,
     QVBoxLayout,
@@ -126,6 +132,9 @@ class DetectionsView(QWidget):
     open_requested = Signal()
     refresh_requested = Signal()
     generate_requested = Signal(float)
+    cancel_requested = Signal()
+    export_requested = Signal()
+    cancel_export_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -158,8 +167,11 @@ class DetectionsView(QWidget):
         setup.addWidget(self.scan_threshold, 1, 1)
         self.generate_button = QPushButton("Generate detections")
         setup.addWidget(self.generate_button, 1, 2)
+        self.cancel_button = QPushButton("Cancel scan")
+        self.cancel_button.setEnabled(False)
+        setup.addWidget(self.cancel_button, 1, 3)
         self.refresh_button = QPushButton("Refresh saved runs")
-        setup.addWidget(self.refresh_button, 1, 3)
+        setup.addWidget(self.refresh_button, 1, 4)
 
         setup.addWidget(QLabel("Show score ≥"), 2, 0)
         self.min_score = QDoubleSpinBox()
@@ -182,6 +194,20 @@ class DetectionsView(QWidget):
         layout.addWidget(self.status_label)
         self.count_label = QLabel("0 detections")
         layout.addWidget(self.count_label)
+
+        export_controls = QHBoxLayout()
+        self.export_button = QPushButton("Export CSV…")
+        self.export_button.setObjectName("detections_export_csv")
+        self.export_button.setToolTip("Export all or filtered results from the selected saved scan")
+        self.export_button.setEnabled(False)
+        self.cancel_export_button = QPushButton("Cancel export")
+        self.cancel_export_button.setEnabled(False)
+        self.export_status_label = QLabel("")
+        self.export_status_label.setWordWrap(True)
+        export_controls.addWidget(self.export_button)
+        export_controls.addWidget(self.cancel_export_button)
+        export_controls.addWidget(self.export_status_label, 1)
+        layout.addLayout(export_controls)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self.table = DetectionTableView()
@@ -247,6 +273,9 @@ class DetectionsView(QWidget):
             lambda: self.generate_requested.emit(self.scan_threshold.value())
         )
         self.refresh_button.clicked.connect(self.refresh_requested)
+        self.cancel_button.clicked.connect(self.cancel_requested)
+        self.export_button.clicked.connect(self.export_requested)
+        self.cancel_export_button.clicked.connect(self.cancel_export_requested)
         self.apply_button.clicked.connect(self._apply_filters)
         self.recording_filter.returnPressed.connect(self._apply_filters)
         self.table.selectionModel().currentRowChanged.connect(
@@ -287,11 +316,22 @@ class DetectionsView(QWidget):
         self.classifier_combo.setCurrentIndex(max(0, index))
         self.classifier_combo.blockSignals(False)
 
-    def set_runs(self, runs, selected_id):
+    def set_runs(self, runs, selected_id, *, current_model_id=None, model_state="unknown"):
         self.run_combo.blockSignals(True)
         self.run_combo.clear()
         for run in runs:
-            name = f"{run.created_at[:19]} · {run.detection_count:,} detections · ≥{run.threshold:.2f}"
+            if model_state == "ready":
+                provenance = "Current model" if run.model_id == current_model_id else "Historical model"
+            elif model_state == "missing":
+                provenance = "No fitted model saved"
+            elif model_state == "checking":
+                provenance = "Checking model…"
+            elif model_state == "error":
+                provenance = "Model status unavailable"
+            else:
+                provenance = "Model not checked"
+            name = (f"{run.created_at[:19]} · {run.detection_count:,} detections "
+                    f"· ≥{run.threshold:.2f} · {provenance}")
             self.run_combo.addItem(name, run.run_id)
         index = self.run_combo.findData(selected_id)
         self.run_combo.setCurrentIndex(max(0, index)) if runs else None
@@ -353,8 +393,52 @@ class DetectionsView(QWidget):
             f"Scanned: {run.scored_count:,} embeddings",
             f"Scan cutoff: {run.threshold:.2f}",
             f"Scan date: {run.created_at}",
+            f"Source: {metadata.get('source_status', 'Unknown')}",
         ))
         self.details.setPlainText("\n".join(lines))
 
     def show_status(self, message):
         self.status_label.setText(message)
+
+    def choose_csv_export(self, run, matching_count):
+        """Ask for export scope and destination on the Qt main thread."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export detections to CSV")
+        contents = QVBoxLayout(dialog)
+        contents.addWidget(QLabel(
+            f"Saved scan: {run.created_at[:19]}\n"
+            f"{run.detection_count:,} stored detections. "
+            "Only scores retained by the scan can be exported."
+        ))
+        all_radio = QRadioButton("All detections in this saved scan")
+        filtered_radio = QRadioButton(
+            f"Currently applied filters ({matching_count:,} matching, all pages)"
+        )
+        all_radio.setChecked(True)
+        contents.addWidget(all_radio)
+        contents.addWidget(filtered_radio)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        contents.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        suggested = f"detections-{run.run_id[:8]}.csv"
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save detections as CSV", suggested, "CSV files (*.csv)"
+        )
+        if not filename:
+            return None
+        destination = Path(filename)
+        if not destination.suffix:
+            destination = destination.with_suffix(".csv")
+        return destination, filtered_radio.isChecked()
+
+    def set_export_state(self, *, available, running, cancelling=False):
+        self.export_button.setEnabled(bool(available and not running))
+        self.cancel_export_button.setEnabled(bool(running and not cancelling))
+
+    def show_export_status(self, message):
+        self.export_status_label.setText(message)

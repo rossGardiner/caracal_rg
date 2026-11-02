@@ -1,12 +1,19 @@
 """Controller for saved detection scans, paged browsing, and Explorer links."""
 
 from functools import partial
+from threading import Event
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from src.BinaryEmbeddingClassifier import BinaryEmbeddingClassifier
 from src.DetectionMetadata import DetectionMetadata
-from src.DetectionScanner import DetectionScanProgress, DetectionScanner
+from src.DetectionExporter import (
+    DetectionExporter, DetectionExportProgress,
+)
+from src.DetectionProvenance import describe_run_model
+from src.DetectionScanner import (
+    DetectionScanProgress, DetectionScanner, fingerprint_classifier_state,
+)
 from src.DetectionStore import DetectionStore
 from src.DetectionsModel import DetectionsModel, PAGE_SIZE
 from src.DetectionsView import DetectionsView
@@ -34,6 +41,18 @@ class DetectionsController(QObject):
         self._available_classifiers = ()
         self._labels_version = None
         self._scan_request_id = 0
+        self._scan_cancel_event = None
+        self._export_request_id = 0
+        self._export_cancel_event = None
+        self._exporting = False
+        self._provenance_request_id = 0
+        self._provenance_key = None
+        self._model_state = "unknown"
+        self._current_model_id = None
+        self._runs = ()
+        self.provenance_jobs = LatestJobRunner(name="detection-provenance", parent=self)
+        self.provenance_jobs.ready.connect(self._provenance_ready)
+        self.provenance_jobs.failed.connect(self._provenance_failed)
         self.scan_jobs = LatestJobRunner(name="detection-scans", parent=self)
         self.scan_jobs.ready.connect(self._scan_ready)
         self.scan_jobs.failed.connect(self._scan_failed)
@@ -50,6 +69,13 @@ class DetectionsController(QObject):
         view.open_requested.connect(self.open_selected)
         view.refresh_requested.connect(self.refresh_runs)
         view.generate_requested.connect(self.generate)
+        view.cancel_requested.connect(self.cancel_scan)
+        self.export_jobs = LatestJobRunner(name="detection-csv-export", parent=self)
+        self.export_jobs.ready.connect(self._export_ready)
+        self.export_jobs.failed.connect(self._export_failed)
+        self.export_jobs.progress.connect(self._export_progress)
+        view.export_requested.connect(self.export_csv)
+        view.cancel_export_requested.connect(self.cancel_export)
         self.refresh_from_active_learning()
 
     @Slot()
@@ -72,7 +98,9 @@ class DetectionsController(QObject):
             else:
                 self.view.set_classifiers(definitions, self.model.classifier_id)
         self._refresh_labels()
+        self._refresh_model_provenance()
         self._update_scan_enabled()
+        self._update_export_enabled()
 
     def _refresh_labels(self):
         definition = next(
@@ -94,10 +122,90 @@ class DetectionsController(QObject):
                 select_local=(selected % PAGE_SIZE if selected is not None else 0),
             )
 
+    def _refresh_model_provenance(self):
+        """Rehash saved weights off the GUI thread only when their file changes."""
+        definition = next(
+            (item for item in self._available_classifiers
+             if item.classifier_id == self.model.classifier_id), None
+        )
+        classifier_id = self.model.classifier_id
+        try:
+            if classifier_id is None:
+                signature = None
+            elif hasattr(self.classifier_store, "model_state_signature"):
+                signature = self.classifier_store.model_state_signature(classifier_id)
+            else:
+                # Allow simple classifier-store stubs in GUI tests. In the
+                # application the real store always supplies a file token.
+                signature = (0, 0) if self.classifier_store.has_model_state(classifier_id) else None
+        except OSError:
+            signature = None
+        # Include the parameters because they contribute to the model hash.
+        parameters = getattr(definition, "classifier_parameters", None)
+        key = (classifier_id, signature, repr(parameters))
+        if key == self._provenance_key:
+            return
+        self._provenance_key = key
+        self._provenance_request_id += 1
+        request_id = self._provenance_request_id
+        self._current_model_id = None
+        if classifier_id is None or signature is None:
+            self._model_state = "missing"
+        elif parameters is None:
+            self._model_state = "error"
+        else:
+            self._model_state = "checking"
+
+            def job():
+                saved = self.classifier_store.load_model_state(classifier_id)
+                if saved is None:
+                    raise RuntimeError("Saved classifier weights disappeared")
+                return fingerprint_classifier_state(parameters, saved)
+
+            self.provenance_jobs.submit(request_id, job)
+        self._show_provenance()
+
+    def _show_provenance(self):
+        if self._runs:
+            selected_id = self.model.run.run_id if self.model.run else None
+            self.view.set_runs(
+                self._runs, selected_id, current_model_id=self._current_model_id,
+                model_state=self._model_state,
+            )
+        if self.model.run is not None and self.model.rows and not self.model.scanning:
+            self.view.show_status(self._compatibility_status())
+
+    @Slot(int, object)
+    def _provenance_ready(self, request_id, model_id):
+        if request_id != self._provenance_request_id:
+            return
+        # The saved file can be replaced while a background hash runs.
+        classifier_id, signature, _ = self._provenance_key
+        current_signature = (
+            self.classifier_store.model_state_signature(classifier_id)
+            if hasattr(self.classifier_store, "model_state_signature") else
+            (0, 0) if self.classifier_store.has_model_state(classifier_id) else None
+        )
+        if current_signature != signature:
+            self._refresh_model_provenance()
+            return
+        self._current_model_id = model_id
+        self._model_state = "ready"
+        self._show_provenance()
+
+    @Slot(int, str)
+    def _provenance_failed(self, request_id, _message):
+        if request_id != self._provenance_request_id:
+            return
+        self._current_model_id = None
+        self._model_state = "error"
+        self._show_provenance()
+
     def _update_scan_enabled(self):
         active = self.active_learning_model
         can_scan = (
-            not self.model.scanning
+            not self._exporting
+            and not self.model.scanning
             and self.model.classifier_id is not None
             and self.model.classifier_id == active.selected_classifier_id
             and active.is_ready
@@ -109,6 +217,21 @@ class DetectionsController(QObject):
         )
         self.view.generate_button.setEnabled(bool(can_scan))
         self.view.scan_threshold.setEnabled(not self.model.scanning)
+        self.view.cancel_button.setEnabled(
+            self.model.scanning
+            and self._scan_cancel_event is not None
+            and not self._scan_cancel_event.is_set()
+        )
+
+    def _update_export_enabled(self):
+        self.view.set_export_state(
+            available=self.model.run is not None and not self.model.scanning,
+            running=self._exporting,
+            cancelling=(
+                self._export_cancel_event is not None
+                and self._export_cancel_event.is_set()
+            ),
+        )
 
     @Slot(str)
     def select_classifier(self, classifier_id):
@@ -116,27 +239,36 @@ class DetectionsController(QObject):
             return
         self.model.classifier_id = classifier_id or None
         self._refresh_labels()
+        self._refresh_model_provenance()
         self.refresh_runs()
         self._update_scan_enabled()
+        self._update_export_enabled()
 
     @Slot()
     def refresh_runs(self, *, preferred_id=None):
         """Load compact run headers; detection rows remain paged on disk."""
         if self.model.classifier_id is None:
             self.model.clear_results()
+            self._runs = ()
             self.view.set_runs((), None)
             self._show_empty("Select a classifier to browse saved detections.")
             return
+        self._refresh_model_provenance()
         try:
             runs = self.store.list_runs(classifier_id=self.model.classifier_id, limit=100)
         except Exception as exc:
+            self._runs = ()
             self._show_empty(f"Could not load detection scans: {exc}")
             return
         previous = preferred_id or (self.model.run.run_id if self.model.run else None)
         selected = next((run for run in runs if run.run_id == previous), None)
         if selected is None and runs:
             selected = runs[0]
-        self.view.set_runs(runs, selected.run_id if selected else None)
+        self._runs = runs
+        self.view.set_runs(
+            runs, selected.run_id if selected else None,
+            current_model_id=self._current_model_id, model_state=self._model_state,
+        )
         self._set_run(selected)
 
     @Slot(str)
@@ -154,6 +286,7 @@ class DetectionsController(QObject):
 
     def _set_run(self, run):
         self.model.run = run
+        self._update_export_enabled()
         self.model.min_score = run.threshold if run else None
         self.model.recording_id = None
         self.view.recording_filter.clear()
@@ -225,6 +358,7 @@ class DetectionsController(QObject):
 
     def _show_empty(self, message):
         self.model.set_page(0, (), 0)
+        self._update_export_enabled()
         self.view.show_page((), ())
         self.view.show_details(None, None, None)
         self.view.set_navigation(0, 0, 0, 0)
@@ -244,6 +378,12 @@ class DetectionsController(QObject):
             return
         metadata = self.metadata.resolve(self.model.run, detection)
         self.view.show_details(self.model.run, detection, metadata)
+        source_status = metadata.get("source_status")
+        status = self._compatibility_status()
+        if (self.metadata.space == self.model.run.embedding_space
+                and source_status != "Chunk reference resolves in Explorer"):
+            status += " Selected source: " + str(source_status) + "."
+        self.view.show_status(status)
         if open_in_explorer:
             # The bridge in explorer.py enforces compatibility a second time.
             self.open_selected()
@@ -287,13 +427,10 @@ class DetectionsController(QObject):
         run = self.model.run
         if run is None:
             return "No detection run selected."
-        if not self.classifier_store.has_model_state(run.classifier_id):
-            provenance = (
-                " No fitted weights are currently saved for this classifier. "
-                "These results are a historical snapshot; retrain before rescanning."
-            )
-        else:
-            provenance = " Saved scans are snapshots; regenerate after retraining."
+        provenance = " " + describe_run_model(
+            run, current_model_id=self._current_model_id,
+            model_state=self._model_state,
+        )
         if self.metadata.space != run.embedding_space:
             return (
                 "Saved results can be browsed. To inspect audio and full metadata, "
@@ -322,7 +459,7 @@ class DetectionsController(QObject):
     def generate(self, threshold):
         """Scan saved trained weights only; never score a mutable training head."""
         active = self.active_learning_model
-        if self.model.scanning:
+        if self.model.scanning or self._exporting:
             return
         if (
             not active.is_ready or active.round_running or
@@ -348,8 +485,11 @@ class DetectionsController(QObject):
 
         self._scan_request_id += 1
         request_id = self._scan_request_id
+        cancel_event = Event()
+        self._scan_cancel_event = cancel_event
         self.model.scanning = True
         self._update_scan_enabled()
+        self._update_export_enabled()
         self.view.show_status("Scanning embeddings… existing completed scans remain available.")
 
         def job():
@@ -365,13 +505,26 @@ class DetectionsController(QObject):
             return scanner.scan(
                 threshold=threshold,
                 progress_callback=partial(self.scan_jobs.report_progress, request_id),
+                cancel_event=cancel_event,
             )
 
         self.scan_jobs.submit(request_id, job)
 
+    @Slot()
+    def cancel_scan(self):
+        """Cooperatively stop the running scan without discarding older runs."""
+        if self.model.scanning and self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+            self.view.show_status(
+                "Cancelling scan… waiting for the current embedding batch to finish."
+            )
+            self._update_scan_enabled()
+
     @Slot(int, object)
     def _scan_progress(self, request_id, progress):
         if request_id != self._scan_request_id or not isinstance(progress, DetectionScanProgress):
+            return
+        if self._scan_cancel_event is not None and self._scan_cancel_event.is_set():
             return
         self.view.show_status(
             f"Scanning… {progress.scored_count:,} embeddings scored, "
@@ -383,7 +536,9 @@ class DetectionsController(QObject):
         if request_id != self._scan_request_id:
             return
         self.model.scanning = False
+        self._scan_cancel_event = None
         self._update_scan_enabled()
+        self._update_export_enabled()
         if run.classifier_id == self.model.classifier_id:
             self.refresh_runs(preferred_id=run.run_id)
             self.view.show_status(self._compatibility_status())
@@ -397,8 +552,106 @@ class DetectionsController(QObject):
         if request_id != self._scan_request_id:
             return
         self.model.scanning = False
+        cancelled = message.startswith("DetectionScanCancelled:")
+        self._scan_cancel_event = None
         self._update_scan_enabled()
-        self.view.show_status(f"Could not generate detections: {message}")
+        self._update_export_enabled()
+        self.view.show_status(
+            "Scan cancelled. Previously completed detection runs were preserved."
+            if cancelled else f"Could not generate detections: {message}"
+        )
+
+    @Slot()
+    def export_csv(self):
+        """Export from SQLite (not from the visible 200-row table page)."""
+        if self.model.run is None or self._exporting or self.model.scanning:
+            return
+        run = self.model.run
+        chosen = self.view.choose_csv_export(run, self.model.total)
+        if chosen is None:
+            return
+        destination, filtered = chosen
+        # Snapshot active context and labels before entering the worker thread;
+        # switching classifier/pipeline while exporting must not affect CSV rows.
+        metadata = DetectionMetadata()
+        metadata.set_context(
+            self.metadata.space, tuple(self.metadata._packets.values()), self.metadata.grid
+        )
+        metadata.set_labels(dict(self.metadata._labels))
+        filters = dict(
+            min_score=self.model.min_score if filtered else None,
+            recording_id=self.model.recording_id if filtered else None,
+            sort_by=self.model.sort_by,
+            descending=self.model.descending,
+        )
+        self._export_request_id += 1
+        request_id = self._export_request_id
+        cancel_event = Event()
+        self._export_cancel_event = cancel_event
+        self._exporting = True
+        self._update_scan_enabled()
+        self._update_export_enabled()
+        self.view.show_export_status("Exporting detections…")
+
+        def job():
+            return DetectionExporter(self.store).export_csv(
+                run, destination, metadata=metadata,
+                cancel_event=cancel_event,
+                progress_callback=partial(self.export_jobs.report_progress, request_id),
+                **filters,
+            )
+
+        self.export_jobs.submit(request_id, job)
+
+    @Slot()
+    def cancel_export(self):
+        if self._exporting and self._export_cancel_event is not None:
+            self._export_cancel_event.set()
+            self._update_export_enabled()
+            self.view.show_export_status("Cancelling CSV export…")
+
+    @Slot(int, object)
+    def _export_progress(self, request_id, progress):
+        if (request_id != self._export_request_id
+                or not isinstance(progress, DetectionExportProgress)
+                or self._export_cancel_event is None
+                or self._export_cancel_event.is_set()):
+            return
+        self.view.show_export_status(
+            f"Exporting CSV: {progress.written:,} / {progress.total:,} detections"
+        )
+
+    @Slot(int, object)
+    def _export_ready(self, request_id, result):
+        if request_id != self._export_request_id:
+            return
+        self._exporting = False
+        self._export_cancel_event = None
+        self._update_scan_enabled()
+        self._update_export_enabled()
+        self.view.show_export_status(
+            f"Exported {result.written:,} detections to {result.path}"
+        )
+
+    @Slot(int, str)
+    def _export_failed(self, request_id, message):
+        if request_id != self._export_request_id:
+            return
+        cancelled = message.startswith("DetectionExportCancelled:")
+        self._exporting = False
+        self._export_cancel_event = None
+        self._update_scan_enabled()
+        self._update_export_enabled()
+        self.view.show_export_status(
+            "CSV export cancelled; existing destination was preserved."
+            if cancelled else f"CSV export failed: {message}"
+        )
 
     def shutdown(self):
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        if self._export_cancel_event is not None:
+            self._export_cancel_event.set()
+        self.export_jobs.shutdown()
         self.scan_jobs.shutdown()
+        self.provenance_jobs.shutdown()

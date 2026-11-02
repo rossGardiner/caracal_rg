@@ -18,14 +18,21 @@ class DetectionScanProgress:
     detection_count: int
 
 
-def classifier_fingerprint(classifier: BinaryEmbeddingClassifier):
-    """Stable identity of the fitted weights and classifier configuration."""
-    state = classifier.export_state()
+class DetectionScanCancelled(RuntimeError):
+    """Raised when a user cancels a scan; its SQL transaction rolls back."""
+
+
+def fingerprint_classifier_state(parameters, state):
+    """Fingerprint saved weights without instantiating or fitting a network.
+
+    The hashing algorithm intentionally matches classifier_fingerprint from
+    Patches 1-3, so existing detection runs need no database migration.
+    """
     if state is None:
-        raise RuntimeError("Cannot scan with an unfitted classifier")
+        raise RuntimeError("Cannot fingerprint missing classifier weights")
     digest = hashlib.sha256()
     digest.update(
-        json.dumps(asdict(classifier.parameters), sort_keys=True).encode("utf-8")
+        json.dumps(asdict(parameters), sort_keys=True).encode("utf-8")
     )
     digest.update(str(state["embedding_dimension"]).encode("ascii"))
     for name, tensor in sorted(state["model_state"].items()):
@@ -35,6 +42,11 @@ def classifier_fingerprint(classifier: BinaryEmbeddingClassifier):
         digest.update(str(array.shape).encode("ascii"))
         digest.update(array.tobytes())
     return digest.hexdigest()
+
+
+def classifier_fingerprint(classifier: BinaryEmbeddingClassifier):
+    """Stable identity of the fitted weights and classifier configuration."""
+    return fingerprint_classifier_state(classifier.parameters, classifier.export_state())
 
 
 class DetectionScanner:
@@ -65,12 +77,17 @@ class DetectionScanner:
         self.classifier_id = str(classifier_id).strip()
         self.batch_size = int(batch_size)
 
-    def scan(self, *, threshold=0.5, progress_callback=None):
+    def scan(self, *, threshold=0.5, progress_callback=None, cancel_event=None):
         """Return a completed ``DetectionRun``; failures leave no partial run.
 
         The threshold is a model-score cutoff, not a calibrated probability of
         the sound being present. Decreasing it later requires a new scan.
         """
+        def check_cancelled():
+            if cancel_event is not None and cancel_event.is_set():
+                raise DetectionScanCancelled("Detection scan cancelled")
+
+        check_cancelled()
         run = DetectionRun.create(
             classifier_id=self.classifier_id,
             model_id=classifier_fingerprint(self.classifier),
@@ -82,7 +99,9 @@ class DetectionScanner:
 
         with self.store.write_run(run) as writer:
             for batch in self.corpus.iter_batches(batch_size=self.batch_size):
+                check_cancelled()
                 probabilities = self.classifier.predict_proba(batch.vectors)
+                check_cancelled()
                 probabilities = np.asarray(probabilities)
                 if probabilities.shape != (len(batch.refs),):
                     raise ValueError("Classifier returned the wrong number of scores")
@@ -95,6 +114,7 @@ class DetectionScanner:
                     for ref, score in zip(batch.refs, probabilities)
                     if float(score) >= run.threshold
                 )
+                check_cancelled()
                 writer.add_batch(matches, scanned_count=len(batch))
                 if progress_callback is not None:
                     progress_callback(
@@ -102,6 +122,8 @@ class DetectionScanner:
                             writer.scored_count, writer.detection_count
                         )
                     )
+            # Also check after the last batch, before the SQLite commit.
+            check_cancelled()
 
         completed = self.store.get_run(run.run_id)
         if completed is None:
