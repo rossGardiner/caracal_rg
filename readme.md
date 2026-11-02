@@ -1,9 +1,11 @@
-# Caracal RG 
+## Developer Wiki
 
-This repository contains code for the CARACAL audio processing project, which is a collaboration between WildCRU at the University of Oxford and Earth Sensors Ltd.  
+The developer wiki explains the key architectural concepts
+needed to understand and extend the application.
 
-# File structure 
-
-src/
-
-
+- [Wiki Home](wiki/index.md)
+- [Application Architecture](wiki/architecture.md)
+- [Audio Data Model](wiki/audio-data-model.md)
+- [Processing Pipelines](wiki/pipelines.md)
+- [Embeddings and Caching](wiki/embeddings-and-caching.md)
+- [Active Learning](wiki/active-learning.md)
