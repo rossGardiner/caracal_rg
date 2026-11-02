@@ -26,6 +26,7 @@ class ActiveLearningView(QWidget):
 
     classifier_selected = Signal(str)
     new_classifier_requested = Signal()
+    configure_classifier_requested = Signal()
     delete_classifier_requested = Signal()
     pipeline_selected = Signal(str)
     prepare_requested = Signal()
@@ -40,6 +41,7 @@ class ActiveLearningView(QWidget):
     skip_candidate_requested = Signal()
     previous_candidate_requested = Signal()
     next_candidate_requested = Signal()
+    quick_review_requested = Signal()
 
     _CLASSIFIER_PLACEHOLDER = "Select classifier…"
     _PIPELINE_PLACEHOLDER = "Select training pipeline…"
@@ -53,6 +55,11 @@ class ActiveLearningView(QWidget):
         )
         self.new_classifier_button = QPushButton("New")
         self.delete_classifier_button = QPushButton("Delete")
+        self.configure_classifier_button = QPushButton("Configure…")
+        self.configure_classifier_button.setToolTip("Edit model training and review settings")
+        self.configure_classifier_button.clicked.connect(
+            self.configure_classifier_requested.emit
+        )
         self.new_classifier_button.clicked.connect(
             self.new_classifier_requested.emit
         )
@@ -62,6 +69,7 @@ class ActiveLearningView(QWidget):
 
         classifier_controls = QHBoxLayout()
         classifier_controls.addWidget(self.classifier_selector, 1)
+        classifier_controls.addWidget(self.configure_classifier_button)
         classifier_controls.addWidget(self.new_classifier_button)
         classifier_controls.addWidget(self.delete_classifier_button)
 
@@ -76,6 +84,9 @@ class ActiveLearningView(QWidget):
         classifier_form.addRow("Bound pipeline:", self.bound_pipeline_value)
         classifier_form.addRow("Bound embedding space:", self.bound_space_value)
         classifier_layout.addLayout(classifier_form)
+        self.configuration_summary = QLabel("—")
+        self.configuration_summary.setWordWrap(True)
+        classifier_layout.addWidget(self.configuration_summary)
 
         self.pipeline_selector = QComboBox()
         self.pipeline_selector.currentIndexChanged.connect(
@@ -172,6 +183,11 @@ class ActiveLearningView(QWidget):
         self.previous_candidate_button = QPushButton("Previous")
         self.next_candidate_button = QPushButton("Next")
         self.open_candidate_button = QPushButton("Open in Explorer")
+        self.quick_review_button = QPushButton("Quick Review…")
+        self.quick_review_button.setToolTip(
+            "Review spectrograms, play audio and label via P / N / S / Space"
+        )
+        self.quick_review_button.clicked.connect(self.quick_review_requested.emit)
         self.candidate_positive_button = QPushButton("Positive")
         self.candidate_negative_button = QPushButton("Negative")
         self.remove_candidate_label_button = QPushButton("Remove label")
@@ -222,6 +238,7 @@ class ActiveLearningView(QWidget):
         candidate_navigation.addWidget(self.previous_candidate_button)
         candidate_navigation.addWidget(self.next_candidate_button)
         candidate_navigation.addWidget(self.open_candidate_button)
+        candidate_navigation.addWidget(self.quick_review_button)
         candidate_navigation.addStretch(1)
 
         candidate_buttons = QHBoxLayout()
@@ -334,6 +351,15 @@ class ActiveLearningView(QWidget):
                 continue
             return name
 
+    def prompt_classifier_parameters(self, definition):
+        """Return configured parameter objects, or None when dismissed."""
+        from src.ActiveLearningSettingsDialog import ActiveLearningSettingsDialog
+
+        dialog = ActiveLearningSettingsDialog(definition, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            return dialog.parameters
+        return None
+
     def confirm_delete_classifier(self, name: str):
         result = QMessageBox.question(
             self,
@@ -389,8 +415,19 @@ class ActiveLearningView(QWidget):
         if classifier is None:
             self.bound_pipeline_value.setText("—")
             self.bound_space_value.setText("—")
+            self.configuration_summary.setText("—")
         else:
             self.bound_pipeline_value.setText(classifier.pipeline_name or "Not bound")
+            params = classifier.classifier_parameters
+            policy = classifier.active_learning_parameters
+            architecture = (
+                "Linear" if params.hidden_dimension is None
+                else f"MLP ({params.hidden_dimension} hidden units)"
+            )
+            self.configuration_summary.setText(
+                f"{architecture} · {params.epochs} epochs · LR {params.learning_rate:g} "
+                f"· {policy.review_queue_size} review candidates"
+            )
             if classifier.embedding_space is None:
                 self.bound_space_value.setText("Not bound")
             else:
@@ -426,6 +463,7 @@ class ActiveLearningView(QWidget):
         self.classifier_selector.setEnabled(not busy)
         self.new_classifier_button.setEnabled(not busy)
         self.delete_classifier_button.setEnabled(has_classifier and not busy)
+        self.configure_classifier_button.setEnabled(has_classifier and not busy)
         self.pipeline_selector.setEnabled(has_classifier and not busy)
         self.prepare_button.setEnabled(
             has_classifier
@@ -460,6 +498,9 @@ class ActiveLearningView(QWidget):
             not model.round_running and model.can_go_next_candidate
         )
         self.open_candidate_button.setEnabled(has_candidate)
+        self.quick_review_button.setEnabled(
+            bool(model.review_queue) and not model.round_running and model.is_ready
+        )
         self.candidate_positive_button.setEnabled(has_candidate)
         self.candidate_negative_button.setEnabled(has_candidate)
         self.remove_candidate_label_button.setEnabled(

@@ -152,6 +152,15 @@ class ActiveLearningClassifierDefinition:
             embedding_space=embedding_space,
         )
 
+    def with_parameters(self, *, classifier_parameters, active_learning_parameters):
+        """Return a validated definition with updated, durable model settings."""
+
+        return replace(
+            self,
+            classifier_parameters=classifier_parameters,
+            active_learning_parameters=active_learning_parameters,
+        )
+
     def with_labels_from(self, learner):
         """Return a copy containing the learner's current human labels."""
 

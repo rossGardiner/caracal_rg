@@ -9,6 +9,8 @@ from src.ActiveLearningClassifierStore import ActiveLearningClassifierStore
 from src.ActiveLearningController import ActiveLearningController
 from src.ActiveLearningModel import ActiveLearningModel
 from src.ActiveLearningView import ActiveLearningView
+from src.QuickReviewController import QuickReviewController
+from src.QuickReviewView import QuickReviewView
 from src.ExplorerController import ExplorerController
 from src.DetectionStore import DetectionStore
 from src.DetectionsModel import DetectionsModel
@@ -208,6 +210,17 @@ def main():
         terminal_view=terminal_view,
     )
 
+    # Quick Review is a separate, non-modal pop-out. It reads the canonical
+    # audio from the compatible Explorer dataset without changing its selection.
+    quick_review_view = QuickReviewView(parent=window)
+    quick_review_controller = QuickReviewController(
+        view=quick_review_view,
+        active_learning_controller=active_learning_controller,
+        explorer_controller=explorer_controller,
+        parent=quick_review_view,
+    )
+    active_learning_view.quick_review_requested.connect(quick_review_controller.show)
+
     def open_active_learning_example(ref):
         if explorer_controller.navigate_to_embedding(ref):
             window.focus_view(explorer_view)
@@ -234,6 +247,7 @@ def main():
 
     detections_controller.open_detection_requested.connect(open_detection)
 
+    app.aboutToQuit.connect(quick_review_controller.shutdown)
     app.aboutToQuit.connect(
         explorer_controller.shutdown
     )
@@ -257,6 +271,8 @@ def main():
         pipeline_controller,
         active_learning_model,
         active_learning_controller,
+        quick_review_view,
+        quick_review_controller,
         detections_model,
         detections_controller,
         detections_store,

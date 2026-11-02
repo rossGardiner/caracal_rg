@@ -96,6 +96,7 @@ class ActiveLearningController(QObject):
 
         self.view.classifier_selected.connect(self.select_classifier)
         self.view.new_classifier_requested.connect(self.new_classifier)
+        self.view.configure_classifier_requested.connect(self.configure_selected_classifier)
         self.view.delete_classifier_requested.connect(self.delete_selected_classifier)
         self.view.pipeline_selected.connect(self.select_pipeline)
         self.view.prepare_requested.connect(self.prepare_selected_pipeline)
@@ -190,6 +191,82 @@ class ActiveLearningController(QObject):
         except (OSError, TypeError, ValueError) as exc:
             self.model.error = f"Could not create classifier: {exc}"
 
+        self.refresh_view()
+
+    @Slot()
+    def configure_selected_classifier(self):
+        """Edit the selected classifier's durable training/review configuration.
+
+        Model changes invalidate fitted weights. Review-only changes retain the
+        fitted weights, but both require re-preparation so the runtime learner
+        is recreated with the new parameters.
+        """
+        definition = self.model.selected_classifier
+        if (
+            definition is None
+            or self.model.status is ActiveLearningStatus.PREPARING
+            or self.model.round_running
+        ):
+            return
+
+        selected = self.view.prompt_classifier_parameters(definition)
+        if selected is None:
+            return
+        # A modal dialog still processes Qt events: don't apply changes to a
+        # classifier that was switched or started a job in the meantime.
+        if (
+            self.model.selected_classifier != definition
+            or self.model.status is ActiveLearningStatus.PREPARING
+            or self.model.round_running
+        ):
+            return
+
+        try:
+            updated = definition.with_parameters(
+                classifier_parameters=selected[0],
+                active_learning_parameters=selected[1],
+            )
+        except (TypeError, ValueError) as exc:
+            self.model.error = f"Invalid classifier settings: {exc}"
+            self.refresh_view()
+            return
+
+        if updated == definition:
+            return
+
+        training_changed = (
+            updated.classifier_parameters != definition.classifier_parameters
+        )
+        previous_definitions = self.model.classifier_definitions
+        replacements = tuple(
+            updated if item.classifier_id == definition.classifier_id else item
+            for item in previous_definitions
+        )
+        try:
+            # Persist before altering the runtime. If removing fitted weights
+            # fails, attempt to restore the previous saved configuration.
+            self.classifier_store.save(replacements)
+            if training_changed:
+                try:
+                    self.classifier_store.delete_model_state(definition.classifier_id)
+                except OSError:
+                    self.classifier_store.save(previous_definitions)
+                    raise
+        except (OSError, TypeError, ValueError) as exc:
+            self.model.error = f"Could not save classifier settings: {exc}"
+            self.refresh_view()
+            return
+
+        self._invalidate_pending_prepare()
+        self._invalidate_pending_round()
+        self.model.replace_classifier(updated)
+        self.model.clear_prepared_context()
+        self.model.status = (
+            ActiveLearningStatus.SELECTED
+            if self.model.selected_pipeline_name is not None
+            else ActiveLearningStatus.UNCONFIGURED
+        )
+        self.model.error = None
         self.refresh_view()
 
     @Slot()
