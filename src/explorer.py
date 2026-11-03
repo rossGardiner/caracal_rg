@@ -247,6 +247,16 @@ def main():
 
     detections_controller.open_detection_requested.connect(open_detection)
 
+    def label_detection(classifier_id, ref, embedding_space, label):
+        _success, message = active_learning_controller.apply_detection_label(
+            classifier_id, ref, embedding_space, label,
+        )
+        # Active Learning emits workspace_state_changed after a successful
+        # save, so the Detections human-label column is refreshed immediately.
+        detections_view.show_status(message)
+
+    detections_controller.label_detection_requested.connect(label_detection)
+
     app.aboutToQuit.connect(quick_review_controller.shutdown)
     app.aboutToQuit.connect(
         explorer_controller.shutdown

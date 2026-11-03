@@ -3,6 +3,8 @@
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSignalBlocker, Qt, Signal
+from src.ActiveLearner import BinaryLabel
+
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
@@ -135,6 +138,8 @@ class DetectionsView(QWidget):
     cancel_requested = Signal()
     export_requested = Signal()
     cancel_export_requested = Signal()
+    context_menu_requested = Signal(int, object)
+    human_label_requested = Signal(object, object, str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -216,11 +221,16 @@ class DetectionsView(QWidget):
         self.table.setModel(self.table_model)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu_at)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionsClickable(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.DescendingOrder)
         self.table.setColumnWidth(0, 70)
         self.table.setColumnWidth(1, 180)
         self.table.setColumnWidth(2, 140)
@@ -232,7 +242,9 @@ class DetectionsView(QWidget):
         self.table.setColumnWidth(8, 130)
         self.table.setToolTip(
             "Click a row to inspect it; use Up/Down to browse across pages, "
-            "Enter to open in Explorer, or click Score / Recording ID to sort"
+            "Enter to open in Explorer, or click any column heading to sort "
+            "the entire filtered detection list (click again to reverse). "
+            "Right-click a detection to set a model-specific human label."
         )
         split.addWidget(self.table)
 
@@ -295,16 +307,78 @@ class DetectionsView(QWidget):
         self.generate_button.setEnabled(False)
         self.set_filters_enabled(False)
 
+    def _context_menu_at(self, position):
+        """Ask the controller which classifiers are compatible with this row."""
+        index = self.table.indexAt(position)
+        if not index.isValid():
+            return
+        # Right-clicking must not open audio in Explorer.
+        with QSignalBlocker(self.table.selectionModel()):
+            self.table.selectRow(index.row())
+        self.context_menu_requested.emit(
+            index.row(), self.table.viewport().mapToGlobal(position)
+        )
+
+    def show_human_label_menu(self, global_position, detection, run, targets):
+        """The scan's classifier gets one-click actions; others use submenus."""
+        menu = QMenu(self.table)
+
+        def add_actions(parent, classifier_id, existing_label):
+            for text, label in (
+                ("Positive", BinaryLabel.POSITIVE),
+                ("Negative", BinaryLabel.NEGATIVE),
+                ("Remove human label", None),
+            ):
+                action = parent.addAction(text)
+                action.setCheckable(label is not None)
+                action.setChecked(label is not None and existing_label is label)
+                if label is None:
+                    action.setEnabled(existing_label is not None)
+                action.triggered.connect(
+                    lambda _checked=False, cid=classifier_id, choice=label:
+                        self.human_label_requested.emit(
+                            detection.ref, run.embedding_space, cid, choice
+                        )
+                )
+
+        default = next(
+            (item for item in targets if item[0] == run.classifier_id), None
+        )
+        if default is not None:
+            menu.addSection(f"Human label for {default[1]}")
+            add_actions(menu, default[0], default[2])
+        others = [item for item in targets if item[0] != run.classifier_id]
+        if others:
+            parent = menu.addMenu("Label for another classifier…") if default else menu
+            for classifier_id, name, existing_label in others:
+                add_actions(parent.addMenu(name), classifier_id, existing_label)
+        if not targets:
+            empty = menu.addAction("No compatible classifiers")
+            empty.setEnabled(False)
+        menu.exec(global_position)
+
     def _apply_filters(self):
         self.filters_requested.emit(self.min_score.value(), self.recording_filter.text().strip())
 
     def _sort_column(self, column):
-        new_sort = {0: "score", 2: "recording"}.get(column)
-        if new_sort is None:
+        # The table only contains a database page. Sorting MUST be delegated
+        # to the controller/store, never QTableView's page-local sort().
+        if not 0 <= column < len(self.table_model.FIELDS):
             return
+        new_sort = self.table_model.FIELDS[column]
         descending = (not self._descending) if new_sort == self._sort_by else (new_sort == "score")
-        self._sort_by, self._descending = new_sort, descending
+        self.set_sort_indicator(new_sort, descending)
         self.sort_requested.emit(new_sort, descending)
+
+    def set_sort_indicator(self, sort_by, descending):
+        self._sort_by, self._descending = sort_by, bool(descending)
+        try:
+            column = self.table_model.FIELDS.index(sort_by)
+        except ValueError:
+            return
+        self.table.horizontalHeader().setSortIndicator(
+            column, Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder
+        )
 
     def set_classifiers(self, definitions, selected_id):
         self.classifier_combo.blockSignals(True)

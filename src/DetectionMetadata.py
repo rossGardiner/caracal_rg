@@ -28,6 +28,29 @@ class DetectionMetadata:
         """Human labels for the currently viewed classifier (not predictions)."""
         self._labels = dict(labels)
 
+    def sort_value(self, run, field, recording_id, chunk_index):
+        """Return exactly the value shown in a sortable metadata column.
+
+        The caller uses this as a per-connection SQLite ordering callback,
+        so results are sorted across *all* pages without loading every
+        detection into a Python list. A missing field is represented by None.
+        """
+        if field == "recording":
+            packet = (
+                self._packets.get(recording_id)
+                if self.space == run.embedding_space else None
+            )
+            return (packet.display_name or recording_id) if packet else recording_id
+        if field == "human_label":
+            from src.EmbeddingCorpus import EmbeddingRef
+            return self._labels.get(EmbeddingRef(recording_id, chunk_index), "Unlabelled")
+        if field not in ("start_s", "end_s", "duration_s", "device_id", "capture_start"):
+            raise ValueError(f"Unsupported metadata sort column: {field}")
+        from src.Detection import Detection
+        from src.EmbeddingCorpus import EmbeddingRef
+        detection = Detection(run.run_id, EmbeddingRef(recording_id, chunk_index), 0.0)
+        return self.resolve(run, detection)[field]
+
     def resolve(self, run, detection):
         """Return stable, display-friendly metadata (missing values are None)."""
         result = {

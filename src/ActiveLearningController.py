@@ -606,6 +606,71 @@ class ActiveLearningController(QObject):
         self._persist_runtime_labels()
         self.refresh_view()
 
+    def apply_detection_label(self, classifier_id, ref, embedding_space, label):
+        """Persist a detection's human label for one compatible classifier.
+
+        This can target a classifier other than the one prepared in Active
+        Learning. Only its durable label set is changed; the review queue and
+        stored detection scores stay intact. The next round trains on labels.
+
+        Returns (success, status_message) for the Detections workspace bridge.
+        """
+        if not isinstance(ref, EmbeddingRef) or not isinstance(embedding_space, EmbeddingSpaceKey):
+            return False, "Invalid detection reference or embedding space."
+        if label is not None and not isinstance(label, BinaryLabel):
+            return False, "Invalid human label."
+        definition = next(
+            (item for item in self.model.classifier_definitions
+             if item.classifier_id == classifier_id), None
+        )
+        if definition is None:
+            return False, "That classifier no longer exists."
+        if definition.embedding_space != embedding_space:
+            return False, (
+                f"Cannot label for {definition.name}: its embedding space does not "
+                "match this detection scan."
+            )
+        if self.model.round_running:
+            return False, "Wait for the Active Learning round to finish before changing labels."
+        if (self.model.selected_classifier_id == classifier_id
+                and self.model.status is ActiveLearningStatus.PREPARING):
+            return False, "Wait for classifier preparation to finish before changing labels."
+        updated = definition.with_label(ref, label)
+        if updated is definition:
+            return True, f"{definition.name}: label already set; no changes needed."
+        previous = self.model.classifier_definitions
+        replacements = tuple(
+            updated if item.classifier_id == classifier_id else item
+            for item in previous
+        )
+        try:
+            self.classifier_store.save(replacements)
+            try:
+                # A changed human training label makes existing fitted weights
+                # stale, exactly as for labels created in Active Learning.
+                self.classifier_store.delete_model_state(classifier_id)
+            except OSError:
+                self.classifier_store.save(previous)
+                raise
+        except (OSError, TypeError, ValueError) as exc:
+            return False, f"Could not save label for {definition.name}: {exc}"
+
+        self.model.replace_classifier(updated)
+        if self.model.selected_classifier_id == classifier_id and self.model.is_ready:
+            if label is None:
+                self.model.learner.remove_label(ref)
+                self.model.clear_review_disposition(ref)
+            else:
+                self.model.learner.label(ref, label)
+                self.model.mark_candidate_labelled(ref)
+        self.model.round_error = None
+        self.refresh_view()  # also notifies Detections and updates its label column
+        description = label.name.title() if label is not None else "Unlabelled"
+        return True, (
+            f"{definition.name}: {description} saved for {ref.recording_id}, "
+            f"chunk {ref.chunk_index}. Retrain to include this example."
+        )
+
     def _persist_runtime_labels(self):
         definition = self.model.selected_classifier
         learner = self.model.learner

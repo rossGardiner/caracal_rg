@@ -25,6 +25,7 @@ class DetectionsController(QObject):
 
     # The composition root validates the embedding space before navigating.
     open_detection_requested = Signal(object, object)
+    label_detection_requested = Signal(str, object, object, object)
 
     def __init__(
         self, *, model: DetectionsModel, view: DetectionsView,
@@ -76,6 +77,8 @@ class DetectionsController(QObject):
         self.export_jobs.progress.connect(self._export_progress)
         view.export_requested.connect(self.export_csv)
         view.cancel_export_requested.connect(self.cancel_export)
+        view.context_menu_requested.connect(self.show_label_context_menu)
+        view.human_label_requested.connect(self.request_human_label)
         self.refresh_from_active_learning()
 
     @Slot()
@@ -307,9 +310,10 @@ class DetectionsController(QObject):
 
     @Slot(str, bool)
     def set_sort(self, sort_by, descending):
-        if sort_by not in ("score", "recording"):
+        if sort_by not in self.view.table_model.FIELDS:
             return
         self.model.sort_by, self.model.descending = sort_by, bool(descending)
+        self.view.set_sort_indicator(sort_by, descending)
         self._load_page(0)
 
     @Slot(int)
@@ -338,6 +342,7 @@ class DetectionsController(QObject):
                 recording_id=self.model.recording_id,
                 sort_by=self.model.sort_by, descending=self.model.descending,
                 limit=PAGE_SIZE, offset=page * PAGE_SIZE,
+                sort_value=self._sort_value(run),
             )
         except Exception as exc:
             self._show_empty(f"Could not load detections: {exc}")
@@ -355,6 +360,16 @@ class DetectionsController(QObject):
             self.view.show_status("No detections match these filters." if total == 0 else "No results in this page.")
         else:
             self.view.show_status(self._compatibility_status())
+
+    def _sort_value(self, run, *, metadata=None):
+        """Live values for columns whose sort keys are not stored in SQLite."""
+        sort_by = self.model.sort_by
+        if sort_by in self.store._NATIVE_SORTS:
+            return None
+        source = self.metadata if metadata is None else metadata
+        return lambda recording_id, chunk_index: source.sort_value(
+            run, sort_by, recording_id, chunk_index,
+        )
 
     def _show_empty(self, message):
         self.model.set_page(0, (), 0)
@@ -387,6 +402,39 @@ class DetectionsController(QObject):
         if open_in_explorer:
             # The bridge in explorer.py enforces compatibility a second time.
             self.open_selected()
+
+    @Slot(int, object)
+    def show_label_context_menu(self, local_row, global_position):
+        run = self.model.run
+        if run is None or not 0 <= local_row < len(self.model.rows):
+            return
+        detection = self.model.rows[local_row]
+        # Right-click changes the inspector selection but never starts playback.
+        self._select_row(local_row, open_in_explorer=False)
+        compatible = tuple(
+            (definition.classifier_id, definition.name,
+             definition.label_for(detection.ref))
+            for definition in self.active_learning_model.classifier_definitions
+            if getattr(definition, "embedding_space", None) == run.embedding_space
+        )
+        # Put the scan's classifier first, followed by other compatible models.
+        compatible = tuple(sorted(
+            compatible, key=lambda item: (item[0] != run.classifier_id, item[1].lower())
+        ))
+        self.view.show_human_label_menu(global_position, detection, run, compatible)
+
+    @Slot(object, object, str, object)
+    def request_human_label(self, ref, embedding_space, classifier_id, label):
+        # A menu may outlive the active page/run if a modal event loop runs.
+        # The AL controller enforces compatibility and the current round state.
+        if not any(
+            definition.classifier_id == classifier_id
+            and getattr(definition, "embedding_space", None) == embedding_space
+            for definition in self.active_learning_model.classifier_definitions
+        ):
+            self.view.show_status("Classifier is missing or uses a different embedding space.")
+            return
+        self.label_detection_requested.emit(classifier_id, ref, embedding_space, label)
 
     @Slot()
     def previous(self):
@@ -583,6 +631,7 @@ class DetectionsController(QObject):
             recording_id=self.model.recording_id if filtered else None,
             sort_by=self.model.sort_by,
             descending=self.model.descending,
+            sort_value=self._sort_value(run, metadata=metadata),
         )
         self._export_request_id += 1
         request_id = self._export_request_id

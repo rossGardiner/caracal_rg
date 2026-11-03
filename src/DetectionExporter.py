@@ -52,7 +52,7 @@ class DetectionExporter:
     def export_csv(
         self, run: DetectionRun, destination, *, min_score=None,
         recording_id=None, sort_by="score", descending=True,
-        metadata: DetectionMetadata | None = None,
+        metadata: DetectionMetadata | None = None, sort_value=None,
         batch_size=1000, cancel_event=None, progress_callback=None,
     ) -> DetectionExportResult:
         """Export all matching rows, not just the visible Qt table page.
@@ -98,6 +98,7 @@ class DetectionExporter:
                 for detection in self.store.iter_detections(
                     run.run_id, min_score=min_score, recording_id=recording_id,
                     sort_by=sort_by, descending=descending, batch_size=batch_size,
+                    sort_value=sort_value,
                 ):
                     # Cancellation is checked per row (even with large batches).
                     check_cancel()

@@ -94,6 +94,8 @@ class DetectionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_detections_score
                     ON detections(run_id, score DESC, recording_id, chunk_index);
+                CREATE INDEX IF NOT EXISTS idx_detections_chunk
+                    ON detections(run_id, chunk_index, recording_id);
                 """
             )
 
@@ -181,22 +183,33 @@ class DetectionStore:
     def list_detections(
         self, run_id, *, min_score=None, recording_id=None,
         sort_by="score", descending=True, limit=200, offset=0,
+        sort_value=None,
     ):
-        """Return one deterministic page, without loading the full result set."""
+        """Return a globally sorted, deterministic page, not a local page sort.
+
+        ``sort_value(recording_id, chunk_index)`` supplies live Explorer
+        metadata for columns not persisted in the detections table. SQLite
+        sorts the full filtered result set while Python retains only one page.
+        """
         limit, offset = self._page(limit, offset)
         where, parameters = self._filters(run_id, min_score, recording_id)
-        order = self._order_by(sort_by, descending)
+        order, needs_function = self._order_by(
+            sort_by, descending, with_metadata=sort_value is not None,
+        )
         query = (
             "SELECT run_id, recording_id, chunk_index, score FROM detections"
             + where + " ORDER BY " + order + " LIMIT ? OFFSET ?"
         )
         with self._connect() as connection:
+            if needs_function:
+                connection.create_function("detection_sort_value", 2, sort_value)
             rows = connection.execute(query, (*parameters, limit, offset)).fetchall()
         return tuple(self._detection_from_row(row) for row in rows)
 
     def iter_detections(
         self, run_id, *, min_score=None, recording_id=None,
         sort_by="score", descending=True, batch_size=1000,
+        sort_value=None,
     ):
         """Stream the complete matching result set using bounded fetches.
 
@@ -208,12 +221,16 @@ class DetectionStore:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         where, parameters = self._filters(run_id, min_score, recording_id)
-        order = self._order_by(sort_by, descending)
+        order, needs_function = self._order_by(
+            sort_by, descending, with_metadata=sort_value is not None,
+        )
         query = (
             "SELECT run_id, recording_id, chunk_index, score FROM detections"
             + where + " ORDER BY " + order
         )
         with self._connect() as connection:
+            if needs_function:
+                connection.create_function("detection_sort_value", 2, sort_value)
             cursor = connection.execute(query, parameters)
             while True:
                 rows = cursor.fetchmany(batch_size)
@@ -230,14 +247,52 @@ class DetectionStore:
             score=row["score"],
         )
 
-    @staticmethod
-    def _order_by(sort_by, descending):
-        if sort_by not in ("score", "recording"):
-            raise ValueError("sort_by must be 'score' or 'recording'")
+    # Only these identifiers can appear in ORDER BY. Never interpolate user
+    # input directly into SQL, including a displayed column heading.
+    _NATIVE_SORTS = {
+        "score": ("score", False),
+        "recording_id": ("recording_id", True),
+        "chunk": ("chunk_index", False),
+    }
+    _METADATA_SORTS = {
+        "recording": True,
+        "human_label": True,
+        "start_s": False,
+        "end_s": False,
+        "duration_s": False,
+        "device_id": True,
+        "capture_start": True,
+    }
+
+    @classmethod
+    def _order_by(cls, sort_by, descending, *, with_metadata=False):
+        """Return validated ORDER BY SQL and whether it needs a SQLite UDF.
+
+        Missing metadata always sorts last in both directions. Recording ID
+        and chunk break every tie, keeping paging and keyboard navigation
+        deterministic even when many rows have the same score/metadata.
+        """
+        if sort_by in cls._NATIVE_SORTS:
+            expression, is_text = cls._NATIVE_SORTS[sort_by]
+            needs_function = False
+        elif sort_by == "recording" and not with_metadata:
+            # Legacy callers without Explorer metadata sort by recording ID.
+            expression, is_text, needs_function = "recording_id", True, False
+        elif sort_by in cls._METADATA_SORTS:
+            if not with_metadata:
+                raise ValueError(f"sorting by {sort_by!r} requires metadata")
+            expression = "detection_sort_value(recording_id, chunk_index)"
+            is_text = cls._METADATA_SORTS[sort_by]
+            needs_function = True
+        else:
+            raise ValueError(f"unsupported detection sort column: {sort_by!r}")
         direction = "DESC" if descending else "ASC"
-        if sort_by == "score":
-            return f"score {direction}, recording_id ASC, chunk_index ASC"
-        return f"recording_id {direction}, chunk_index ASC, score DESC"
+        collation = " COLLATE NOCASE" if is_text else ""
+        return (
+            f"{expression}{collation} {direction} NULLS LAST, "
+            "recording_id ASC, chunk_index ASC",
+            needs_function,
+        )
 
     @staticmethod
     def _page(limit, offset):

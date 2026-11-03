@@ -161,6 +161,23 @@ class ActiveLearningClassifierDefinition:
             active_learning_parameters=active_learning_parameters,
         )
 
+    def with_label(self, ref: EmbeddingRef, label: BinaryLabel | None):
+        """Return a classifier definition with one human label updated.
+
+        Labels are training examples, not entries in the transient review queue.
+        Passing None removes an existing label. Unchanged labels are a no-op.
+        """
+        if not isinstance(ref, EmbeddingRef):
+            raise TypeError("ref must be an EmbeddingRef")
+        if label is not None and not isinstance(label, BinaryLabel):
+            raise TypeError("label must be BinaryLabel or None")
+        if self.label_for(ref) is label:
+            return self
+        remaining = [item for item in self.labels if item.ref != ref]
+        if label is not None:
+            remaining.append(LabelledEmbedding(ref=ref, label=label))
+        return replace(self, labels=tuple(remaining))
+
     def with_labels_from(self, learner):
         """Return a copy containing the learner's current human labels."""
 
