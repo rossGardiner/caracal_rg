@@ -178,6 +178,33 @@ class ActiveLearningClassifierDefinition:
             remaining.append(LabelledEmbedding(ref=ref, label=label))
         return replace(self, labels=tuple(remaining))
 
+    def with_labels_bulk(self, refs, label: BinaryLabel | None):
+        """Update many training examples in one immutable replacement.
+
+        No-op changes keep object identity. The input can be a set spanning
+        several pages; duplicate refs are harmless. Changes never touch the
+        review queue or classifier scores.
+        """
+        if label is not None and not isinstance(label, BinaryLabel):
+            raise TypeError("label must be BinaryLabel or None")
+        refs = set(refs)
+        if any(not isinstance(ref, EmbeddingRef) for ref in refs):
+            raise TypeError("refs must contain EmbeddingRef objects")
+        if not refs:
+            return self
+        previous = {item.ref: item.label for item in self.labels}
+        if all(previous.get(ref) is label for ref in refs):
+            return self
+        for ref in sorted(refs, key=lambda ref: (ref.recording_id, ref.chunk_index)):
+            if label is None:
+                previous.pop(ref, None)
+            else:
+                previous[ref] = label
+        return replace(self, labels=tuple(
+            LabelledEmbedding(ref=ref, label=current)
+            for ref, current in previous.items()
+        ))
+
     def with_labels_from(self, learner):
         """Return a copy containing the learner's current human labels."""
 

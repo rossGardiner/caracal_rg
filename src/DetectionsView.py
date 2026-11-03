@@ -2,12 +2,17 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSignalBlocker, Qt, Signal
+from PySide6.QtCore import (
+    QAbstractTableModel, QModelIndex, QItemSelection, QItemSelectionModel,
+    QSignalBlocker, Qt, Signal,
+)
+from PySide6.QtGui import QBrush, QColor
 from src.ActiveLearner import BinaryLabel
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QDialog,
     QDialogButtonBox,
@@ -33,23 +38,32 @@ class DetectionTableModel(QAbstractTableModel):
     """A fixed-size page of detections, not one widget per corpus chunk."""
 
     HEADERS = (
-        "Score", "Recording", "Recording ID", "Chunk", "Human label",
+        "Score", "Group", "Recording", "Recording ID", "Chunk", "Human label",
         "Start (s)", "End (s)", "Duration (s)", "Device", "Captured (UTC)",
     )
     FIELDS = (
-        "score", "recording", "recording_id", "chunk", "human_label",
+        "score", "group", "recording", "recording_id", "chunk", "human_label",
         "start_s", "end_s", "duration_s", "device_id", "capture_start",
+    )
+    _GROUP_COLOURS = (
+        QColor("#3b82f6"), QColor("#22a878"), QColor("#e3a12f"),
+        QColor("#a78bfa"), QColor("#ed7795"), QColor("#0baabd"),
+        QColor("#b0a34b"), QColor("#df8b55"),
     )
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows = ()
         self.metadata = ()
+        self.groups = ()
 
-    def set_page(self, rows, metadata):
+    def set_page(self, rows, metadata, groups=None):
         self.beginResetModel()
         self.rows = tuple(rows)
         self.metadata = tuple(metadata)
+        self.groups = tuple(groups) if groups is not None else (None,) * len(self.rows)
+        if len(self.rows) != len(self.metadata) or len(self.rows) != len(self.groups):
+            raise ValueError("Detection table rows, metadata and groups must align")
         self.endResetModel()
 
     def rowCount(self, parent=QModelIndex()):
@@ -66,17 +80,36 @@ class DetectionTableModel(QAbstractTableModel):
         return section + 1
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or role not in (
-            Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.TextAlignmentRole,
-        ):
+        if not index.isValid():
             return None
         field = self.FIELDS[index.column()]
+        group = self.groups[index.row()]
+        if role == Qt.ItemDataRole.BackgroundRole and group is not None:
+            # Blend rather than replace the palette, remaining legible in
+            # dark/light themes. Group numbers provide non-colour identity.
+            parent = self.parent()
+            base = parent.palette().base().color() if parent is not None else QColor("#ffffff")
+            accent = self._GROUP_COLOURS[(group.group_id - 1) % len(self._GROUP_COLOURS)]
+            weight = 0.16
+            return QBrush(QColor(
+                round(base.red() * (1-weight) + accent.red() * weight),
+                round(base.green() * (1-weight) + accent.green() * weight),
+                round(base.blue() * (1-weight) + accent.blue() * weight),
+            ))
+        if role == Qt.ItemDataRole.ToolTipRole and group is not None:
+            return (f"Temporal group {group.group_id} · "
+                    f"{group.detection_count:,} detections (entire scan) · "
+                    f"{group.start_s:.2f}–{group.end_s:.2f} s")
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return (
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                if field in ("score", "chunk", "start_s", "end_s", "duration_s")
+                if field in ("score", "group", "chunk", "start_s", "end_s", "duration_s")
                 else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if field == "group":
+            return str(group.group_id) if group is not None else "—"
         value = self.metadata[index.row()].get(field)
         if value is None:
             return "—"
@@ -93,6 +126,25 @@ class DetectionTableView(QTableView):
     previous_at_boundary = Signal()
     next_at_boundary = Signal()
     open_at_selection = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bulk_selection_in_progress = False
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            # Qt's default right-click handling can collapse an existing
+            # ExtendedSelection before the context menu action is chosen.
+            # Leave highlighting untouched: contextMenuEvent still fires.
+            event.accept()
+            return
+        self.bulk_selection_in_progress = bool(event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        ))
+        try:
+            super().mousePressEvent(event)
+        finally:
+            self.bulk_selection_in_progress = False
 
     def keyPressEvent(self, event):
         if event.modifiers() & (
@@ -140,6 +192,13 @@ class DetectionsView(QWidget):
     cancel_export_requested = Signal()
     context_menu_requested = Signal(int, object)
     human_label_requested = Signal(object, object, str, object)
+    human_labels_requested = Signal(object, str, object, str, object)
+    grouping_requested = Signal(bool, float)
+    selected_page_refs_changed = Signal(object)
+    clear_selection_requested = Signal()
+    select_all_matching_requested = Signal()
+    select_group_requested = Signal(int, bool)  # group ID, respect filters
+
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -147,6 +206,9 @@ class DetectionsView(QWidget):
         self.setMinimumWidth(0)
         self._sort_by = "score"
         self._descending = True
+        self._context_group = None
+        self._context_label_refs = frozenset()
+        self._context_outside_selection = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -194,16 +256,59 @@ class DetectionsView(QWidget):
         setup.setColumnStretch(3, 2)
         layout.addLayout(setup)
 
+        grouping_controls = QHBoxLayout()
+        self.grouping_checkbox = QCheckBox("Temporal grouping")
+        self.grouping_checkbox.setObjectName("detections_grouping_enabled")
+        self.grouping_checkbox.setToolTip(
+            "Colour detections within each recording by time proximity. "
+            "Grouping uses the full saved scan, regardless of the table filters."
+        )
+        self.group_gap = QDoubleSpinBox()
+        self.group_gap.setObjectName("detections_group_gap")
+        self.group_gap.setRange(0.0, 86400.0)
+        self.group_gap.setDecimals(3)
+        self.group_gap.setSingleStep(1.0)
+        self.group_gap.setValue(10.0)
+        self.group_gap.setSuffix(" s")
+        self.group_gap.setToolTip("Maximum time gap between consecutive detection intervals")
+        self.apply_grouping_button = QPushButton("Apply grouping")
+        self.apply_grouping_button.setObjectName("detections_apply_grouping")
+        self.group_status = QLabel("Grouping off")
+        self.group_status.setWordWrap(True)
+        grouping_controls.addWidget(self.grouping_checkbox)
+        grouping_controls.addWidget(QLabel("Max gap:"))
+        grouping_controls.addWidget(self.group_gap)
+        grouping_controls.addWidget(self.apply_grouping_button)
+        grouping_controls.addWidget(self.group_status, 1)
+        layout.addLayout(grouping_controls)
+
         self.status_label = QLabel("Select a classifier to browse saved detections.")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         self.count_label = QLabel("0 detections")
         layout.addWidget(self.count_label)
 
+        selection_controls = QHBoxLayout()
+        self.selection_count_label = QLabel("0 selected")
+        self.selection_count_label.setObjectName("detections_selection_count")
+        self.select_all_matching_button = QPushButton("Select all matching")
+        self.select_all_matching_button.setObjectName("detections_select_all_matching")
+        self.select_all_matching_button.setToolTip(
+            "Select every result matching the applied filters, across all pages"
+        )
+        self.clear_selection_button = QPushButton("Clear selection")
+        self.clear_selection_button.setObjectName("detections_clear_selection")
+        self.clear_selection_button.setEnabled(False)
+        selection_controls.addWidget(self.selection_count_label)
+        selection_controls.addWidget(self.select_all_matching_button)
+        selection_controls.addWidget(self.clear_selection_button)
+        selection_controls.addStretch(1)
+        layout.addLayout(selection_controls)
+
         export_controls = QHBoxLayout()
         self.export_button = QPushButton("Export CSV…")
         self.export_button.setObjectName("detections_export_csv")
-        self.export_button.setToolTip("Export all or filtered results from the selected saved scan")
+        self.export_button.setToolTip("Export all, filtered, or selected detections to CSV")
         self.export_button.setEnabled(False)
         self.cancel_export_button = QPushButton("Cancel export")
         self.cancel_export_button.setEnabled(False)
@@ -220,7 +325,7 @@ class DetectionsView(QWidget):
         self.table_model = DetectionTableModel(self.table)
         self.table.setModel(self.table_model)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu_at)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -231,20 +336,15 @@ class DetectionsView(QWidget):
         self.table.horizontalHeader().setSectionsClickable(True)
         self.table.horizontalHeader().setSortIndicatorShown(True)
         self.table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.DescendingOrder)
-        self.table.setColumnWidth(0, 70)
-        self.table.setColumnWidth(1, 180)
-        self.table.setColumnWidth(2, 140)
-        self.table.setColumnWidth(3, 65)
-        self.table.setColumnWidth(4, 100)
-        self.table.setColumnWidth(5, 90)
-        self.table.setColumnWidth(6, 90)
-        self.table.setColumnWidth(7, 90)
-        self.table.setColumnWidth(8, 130)
+        for column, width in enumerate((70, 72, 180, 140, 65, 100, 90, 90, 90, 130)):
+            self.table.setColumnWidth(column, width)
         self.table.setToolTip(
             "Click a row to inspect it; use Up/Down to browse across pages, "
             "Enter to open in Explorer, or click any column heading to sort "
             "the entire filtered detection list (click again to reverse). "
-            "Right-click a detection to set a model-specific human label."
+            "Ctrl-click / Shift-click to select multiple rows, even across pages. "
+            "Right-click a selected row to label every selected detection; "
+            "right-click an unselected row to label only that row."
         )
         split.addWidget(self.table)
 
@@ -293,11 +393,16 @@ class DetectionsView(QWidget):
         self.table.selectionModel().currentRowChanged.connect(
             lambda current, _: self.detection_row_selected.emit(current.row())
         )
+        self.table.selectionModel().selectionChanged.connect(self._emit_page_selection)
+        self.select_all_matching_button.clicked.connect(self.select_all_matching_requested)
+        self.clear_selection_button.clicked.connect(self.clear_selection_requested)
         self.table.doubleClicked.connect(lambda _: self.open_requested.emit())
         self.table.open_at_selection.connect(self.open_requested)
         self.table.previous_at_boundary.connect(self.previous_requested)
         self.table.next_at_boundary.connect(self.next_requested)
         self.table.horizontalHeader().sectionClicked.connect(self._sort_column)
+        self.apply_grouping_button.clicked.connect(self._apply_grouping)
+        self.grouping_checkbox.toggled.connect(self._grouping_toggled)
         self.prev_button.clicked.connect(self.previous_requested)
         self.next_button.clicked.connect(self.next_requested)
         self.open_button.clicked.connect(self.open_requested)
@@ -306,22 +411,133 @@ class DetectionsView(QWidget):
         self.set_navigation(0, 0, 0, 0)
         self.generate_button.setEnabled(False)
         self.set_filters_enabled(False)
+        self.set_grouping_available(False)
+        self.set_selection_state(0, available=False)
+
+    def _grouping_toggled(self, enabled):
+        self.group_gap.setEnabled(enabled and self.grouping_checkbox.isEnabled())
+        self._apply_grouping()
+
+    def _apply_grouping(self):
+        self.grouping_requested.emit(self.grouping_checkbox.isChecked(), self.group_gap.value())
+
+    def set_grouping_available(self, available):
+        self.grouping_checkbox.setEnabled(available)
+        self.group_gap.setEnabled(available and self.grouping_checkbox.isChecked())
+        self.apply_grouping_button.setEnabled(available)
+
+    def set_grouping_state(self, enabled, *, message="Grouping off", busy=False):
+        with QSignalBlocker(self.grouping_checkbox):
+            self.grouping_checkbox.setChecked(bool(enabled))
+        self.group_gap.setEnabled(self.grouping_checkbox.isEnabled() and enabled and not busy)
+        self.apply_grouping_button.setEnabled(self.grouping_checkbox.isEnabled() and not busy)
+        self.group_status.setText(message)
 
     def _context_menu_at(self, position):
         """Ask the controller which classifiers are compatible with this row."""
         index = self.table.indexAt(position)
         if not index.isValid():
             return
-        # Right-clicking must not open audio in Explorer.
+        # Preserve any Ctrl/Shift multi-selection. Right-click changes the
+        # inspected row only; it must not silently replace the bulk selection.
         with QSignalBlocker(self.table.selectionModel()):
-            self.table.selectRow(index.row())
+            self.table.selectionModel().setCurrentIndex(
+                index, QItemSelectionModel.SelectionFlag.NoUpdate
+            )
         self.context_menu_requested.emit(
             index.row(), self.table.viewport().mapToGlobal(position)
         )
 
+    def _emit_page_selection(self, *_):
+        selected = tuple(
+            self.table_model.rows[index.row()].ref
+            for index in self.table.selectionModel().selectedRows()
+            if 0 <= index.row() < len(self.table_model.rows)
+        )
+        self.selected_page_refs_changed.emit(selected)
+
+    def set_selection_state(self, count, *, available=True, busy=False):
+        self.selection_count_label.setText(
+            f"{count:,} selected" + (" · selecting…" if busy else "")
+        )
+        self.clear_selection_button.setEnabled(count > 0 or busy)
+        self.select_all_matching_button.setEnabled(available and not busy)
+
+    def set_context_group(self, group):
+        self._context_group = group
+
+    def set_context_label_refs(self, refs, *, outside_selection=False):
+        """Snapshot which detections the existing label actions will affect."""
+        self._context_label_refs = frozenset(refs)
+        self._context_outside_selection = bool(outside_selection)
+
+    def move_current_to_row(self, row):
+        """Navigate the inspector without changing the bulk selection."""
+        index = self.table_model.index(row, 0)
+        if index.isValid():
+            self.table.selectionModel().setCurrentIndex(
+                index, QItemSelectionModel.SelectionFlag.NoUpdate
+            )
+            self.table.scrollTo(index)
+
+    def restore_bulk_selection(self, rows, selected_refs):
+        """Update highlights without replacing the current inspected row."""
+        selected = set(selected_refs)
+        selection_model = self.table.selectionModel()
+        with QSignalBlocker(selection_model):
+            selection_model.clearSelection()
+            selection = QItemSelection()
+            for row_index, detection in enumerate(rows):
+                if detection.ref in selected:
+                    selection.select(
+                        self.table_model.index(row_index, 0),
+                        self.table_model.index(row_index, len(self.table_model.FIELDS) - 1),
+                    )
+            if not selection.isEmpty():
+                selection_model.select(
+                    selection, QItemSelectionModel.SelectionFlag.Select
+                )
+
     def show_human_label_menu(self, global_position, detection, run, targets):
         """The scan's classifier gets one-click actions; others use submenus."""
         menu = QMenu(self.table)
+        context_refs = self._context_label_refs or frozenset((detection.ref,))
+        multiple = len(context_refs) > 1
+        group = self._context_group
+        if group is not None:
+            group_action = menu.addAction(
+                f"Select entire temporal group {group.group_id} "
+                f"({group.detection_count:,} detections)"
+            )
+            group_action.triggered.connect(
+                lambda _checked=False, gid=group.group_id:
+                    self.select_group_requested.emit(gid, False)
+            )
+            matching_action = menu.addAction("Select matching members of this group")
+            matching_action.triggered.connect(
+                lambda _checked=False, gid=group.group_id:
+                    self.select_group_requested.emit(gid, True)
+            )
+            menu.addSeparator()
+        clear_action = menu.addAction("Clear bulk selection")
+        clear_action.triggered.connect(self.clear_selection_requested)
+        menu.addSeparator()
+
+        if multiple:
+            menu.addSection(f"Labelling {len(context_refs):,} selected detections")
+        elif self._context_outside_selection:
+            menu.addSection("This detection only (outside selection)")
+
+        def emit_label(classifier_id, label):
+            if multiple:
+                self.human_labels_requested.emit(
+                    context_refs, run.run_id, run.embedding_space,
+                    classifier_id, label,
+                )
+            else:
+                self.human_label_requested.emit(
+                    detection.ref, run.embedding_space, classifier_id, label
+                )
 
         def add_actions(parent, classifier_id, existing_label):
             for text, label in (
@@ -330,15 +546,18 @@ class DetectionsView(QWidget):
                 ("Remove human label", None),
             ):
                 action = parent.addAction(text)
-                action.setCheckable(label is not None)
-                action.setChecked(label is not None and existing_label is label)
+                # For a mixed selection, the clicked row's label is not
+                # representative of the entire batch.
+                action.setCheckable(label is not None and not multiple)
+                if not multiple and label is not None:
+                    action.setChecked(existing_label is label)
                 if label is None:
-                    action.setEnabled(existing_label is not None)
+                    # A selected batch can contain labels even if the clicked
+                    # detection is unlabelled; don't disable Remove in that case.
+                    action.setEnabled(multiple or existing_label is not None)
                 action.triggered.connect(
                     lambda _checked=False, cid=classifier_id, choice=label:
-                        self.human_label_requested.emit(
-                            detection.ref, run.embedding_space, cid, choice
-                        )
+                        emit_label(cid, choice)
                 )
 
         default = next(
@@ -366,6 +585,10 @@ class DetectionsView(QWidget):
         if not 0 <= column < len(self.table_model.FIELDS):
             return
         new_sort = self.table_model.FIELDS[column]
+        if new_sort == "group" and not self.grouping_checkbox.isChecked():
+            self.group_status.setText("Enable temporal grouping before sorting by Group.")
+            self.set_sort_indicator(self._sort_by, self._descending)
+            return
         descending = (not self._descending) if new_sort == self._sort_by else (new_sort == "score")
         self.set_sort_indicator(new_sort, descending)
         self.sort_requested.emit(new_sort, descending)
@@ -419,16 +642,31 @@ class DetectionsView(QWidget):
         if self.min_score.value() < minimum:
             self.min_score.setValue(minimum)
 
-    def show_page(self, rows, metadata, *, selected_row=None):
+    def show_page(self, rows, metadata, *, selected_row=None, groups=None,
+                  selected_refs=()):
         # Model resets and programmatic selection must not look like a user's
         # row click. The controller explicitly updates the inspector after
         # populating the page and only requests audio on user navigation.
         with QSignalBlocker(self.table.selectionModel()):
-            self.table_model.set_page(rows, metadata)
+            self.table_model.set_page(rows, metadata, groups)
+            selected = set(selected_refs)
+            selection = QItemSelection()
+            for row_index, detection in enumerate(rows):
+                if detection.ref in selected:
+                    selection.select(
+                        self.table_model.index(row_index, 0),
+                        self.table_model.index(row_index, len(self.table_model.FIELDS) - 1),
+                    )
+            if not selection.isEmpty():
+                self.table.selectionModel().select(
+                    selection, QItemSelectionModel.SelectionFlag.Select
+                )
             if selected_row is not None and 0 <= selected_row < len(rows):
-                self.table.selectRow(selected_row)
-                self.table.setCurrentIndex(self.table_model.index(selected_row, 0))
-                self.table.scrollTo(self.table_model.index(selected_row, 0))
+                index = self.table_model.index(selected_row, 0)
+                self.table.selectionModel().setCurrentIndex(
+                    index, QItemSelectionModel.SelectionFlag.NoUpdate
+                )
+                self.table.scrollTo(index)
 
     def set_navigation(self, position, total, page, page_count):
         self.position_label.setText(f"{position:,} / {total:,}   ·   Page {page + 1} / {max(1, page_count)}")
@@ -439,7 +677,7 @@ class DetectionsView(QWidget):
         self.next_page_button.setEnabled(page + 1 < page_count)
         self.open_button.setEnabled(position > 0)
 
-    def show_details(self, run, detection, metadata):
+    def show_details(self, run, detection, metadata, *, group=None):
         if run is None or detection is None or metadata is None:
             self.details.setPlainText("Select a result to see its metadata.")
             return
@@ -458,6 +696,12 @@ class DetectionsView(QWidget):
         ):
             value = metadata.get(field)
             lines.append(f"{label}: {value if value is not None else '—'}")
+        if group is not None:
+            lines.extend((
+                "", f"Temporal group: {group.group_id}",
+                f"Group detections: {group.detection_count:,}",
+                f"Group interval (nominal): {group.start_s:.2f}–{group.end_s:.2f} s",
+            ))
         lines.extend((
             "", "Prediction provenance:",
             f"Classifier: {run.classifier_id}",
@@ -474,7 +718,7 @@ class DetectionsView(QWidget):
     def show_status(self, message):
         self.status_label.setText(message)
 
-    def choose_csv_export(self, run, matching_count):
+    def choose_csv_export(self, run, matching_count, selected_count=0):
         """Ask for export scope and destination on the Qt main thread."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Export detections to CSV")
@@ -488,9 +732,14 @@ class DetectionsView(QWidget):
         filtered_radio = QRadioButton(
             f"Currently applied filters ({matching_count:,} matching, all pages)"
         )
+        selected_radio = QRadioButton(
+            f"Selected detections ({selected_count:,}, across all pages)"
+        )
+        selected_radio.setEnabled(selected_count > 0)
         all_radio.setChecked(True)
         contents.addWidget(all_radio)
         contents.addWidget(filtered_radio)
+        contents.addWidget(selected_radio)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -508,7 +757,9 @@ class DetectionsView(QWidget):
         destination = Path(filename)
         if not destination.suffix:
             destination = destination.with_suffix(".csv")
-        return destination, filtered_radio.isChecked()
+        scope = ("selected" if selected_radio.isChecked() else
+                 "filtered" if filtered_radio.isChecked() else "all")
+        return destination, scope
 
     def set_export_state(self, *, available, running, cancelling=False):
         self.export_button.setEnabled(bool(available and not running))

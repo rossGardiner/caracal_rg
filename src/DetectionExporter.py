@@ -9,6 +9,7 @@ import tempfile
 from src.Detection import DetectionRun
 from src.DetectionMetadata import DetectionMetadata
 from src.DetectionStore import DetectionStore
+from src.EmbeddingCorpus import EmbeddingRef
 
 
 COLUMNS = (
@@ -53,6 +54,7 @@ class DetectionExporter:
         self, run: DetectionRun, destination, *, min_score=None,
         recording_id=None, sort_by="score", descending=True,
         metadata: DetectionMetadata | None = None, sort_value=None,
+        grouping_id=None, selected_refs=None,
         batch_size=1000, cancel_event=None, progress_callback=None,
     ) -> DetectionExportResult:
         """Export all matching rows, not just the visible Qt table page.
@@ -82,9 +84,24 @@ class DetectionExporter:
                 raise DetectionExportCancelled("CSV export cancelled")
 
         check_cancel()
-        total = self.store.count_detections(
-            run.run_id, min_score=min_score, recording_id=recording_id,
-        )
+        selected = None if selected_refs is None else frozenset(selected_refs)
+        if selected is not None and any(
+            not isinstance(ref, EmbeddingRef) for ref in selected
+        ):
+            raise TypeError("selected_refs must contain EmbeddingRef objects")
+        if selected is None:
+            total = self.store.count_detections(
+                run.run_id, min_score=min_score, recording_id=recording_id,
+            )
+        else:
+            # Selection is already scoped to this scan in DetectionsModel.
+            # Intersect with the persisted run so stale or invalid refs cannot
+            # produce an incorrect progress count.
+            total = sum(
+                1 for ref in self.store.iter_selection_refs(
+                    run.run_id, min_score=min_score, recording_id=recording_id,
+                ) if ref in selected
+            )
         if progress_callback is not None:
             progress_callback(DetectionExportProgress(0, total))
         fd, temporary = tempfile.mkstemp(
@@ -98,10 +115,12 @@ class DetectionExporter:
                 for detection in self.store.iter_detections(
                     run.run_id, min_score=min_score, recording_id=recording_id,
                     sort_by=sort_by, descending=descending, batch_size=batch_size,
-                    sort_value=sort_value,
+                    sort_value=sort_value, grouping_id=grouping_id,
                 ):
                     # Cancellation is checked per row (even with large batches).
                     check_cancel()
+                    if selected is not None and detection.ref not in selected:
+                        continue
                     fields = metadata.resolve(run, detection)
                     row = {
                         "run_id": run.run_id,

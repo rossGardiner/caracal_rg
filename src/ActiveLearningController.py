@@ -671,6 +671,71 @@ class ActiveLearningController(QObject):
             f"chunk {ref.chunk_index}. Retrain to include this example."
         )
 
+    def apply_detection_labels(self, classifier_id, refs, embedding_space, label):
+        """Persist a batch of detection labels with one save/invalidation.
+
+        Returns (success, message). The existing human-label file remains the
+        sole source of truth; historical scan scores are not updated.
+        """
+        if not isinstance(embedding_space, EmbeddingSpaceKey):
+            return False, "Invalid detection embedding space."
+        if label is not None and not isinstance(label, BinaryLabel):
+            return False, "Invalid human label."
+        refs = tuple(refs)
+        if not refs or any(not isinstance(ref, EmbeddingRef) for ref in refs):
+            return False, "Select valid detections before bulk labelling."
+        definition = next(
+            (item for item in self.model.classifier_definitions
+             if item.classifier_id == classifier_id), None,
+        )
+        if definition is None:
+            return False, "That classifier no longer exists."
+        if definition.embedding_space != embedding_space:
+            return False, f"{definition.name} uses a different embedding space."
+        if self.model.round_running:
+            return False, "Wait for the Active Learning round to finish."
+        if (self.model.selected_classifier_id == classifier_id
+                and self.model.status is ActiveLearningStatus.PREPARING):
+            return False, "Wait for classifier preparation to finish."
+
+        selected = set(refs)
+        previous_labels = {item.ref: item.label for item in definition.labels}
+        changed = tuple(ref for ref in selected if previous_labels.get(ref) is not label)
+        if not changed:
+            return True, f"{definition.name}: all {len(selected):,} selected labels already match."
+        updated = definition.with_labels_bulk(selected, label)
+        previous = self.model.classifier_definitions
+        replacements = tuple(
+            updated if item.classifier_id == classifier_id else item
+            for item in previous
+        )
+        try:
+            self.classifier_store.save(replacements)
+            try:
+                self.classifier_store.delete_model_state(classifier_id)
+            except OSError:
+                self.classifier_store.save(previous)
+                raise
+        except (OSError, TypeError, ValueError) as exc:
+            return False, f"Could not save bulk labels for {definition.name}: {exc}"
+
+        self.model.replace_classifier(updated)
+        if self.model.selected_classifier_id == classifier_id and self.model.is_ready:
+            for ref in changed:
+                if label is None:
+                    self.model.learner.remove_label(ref)
+                    self.model.clear_review_disposition(ref)
+                else:
+                    self.model.learner.label(ref, label)
+                    self.model.mark_candidate_labelled(ref)
+        self.model.round_error = None
+        self.refresh_view()
+        description = label.name.title() if label is not None else "Removed"
+        return True, (
+            f"{definition.name}: {description} for {len(changed):,} detections "
+            f"({len(selected):,} selected). Retrain to apply changes."
+        )
+
     def _persist_runtime_labels(self):
         definition = self.model.selected_classifier
         learner = self.model.learner

@@ -257,6 +257,14 @@ def main():
 
     detections_controller.label_detection_requested.connect(label_detection)
 
+    def label_detections(classifier_id, refs, embedding_space, label):
+        _success, message = active_learning_controller.apply_detection_labels(
+            classifier_id, refs, embedding_space, label,
+        )
+        detections_view.show_status(message)
+
+    detections_controller.label_detections_requested.connect(label_detections)
+
     app.aboutToQuit.connect(quick_review_controller.shutdown)
     app.aboutToQuit.connect(
         explorer_controller.shutdown

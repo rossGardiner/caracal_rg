@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from src.Detection import Detection, DetectionRun
+from src.EmbeddingCorpus import EmbeddingRef
 
 
 PAGE_SIZE = 200
@@ -22,6 +23,50 @@ class DetectionsModel:
     selected_index: int | None = None
     scanning: bool = False
     status: str = "Select a classifier to browse saved detections."
+    grouping_enabled: bool = False
+    grouping_gap_s: float = 10.0
+    grouping: object | None = None
+    # The current inspected row is independent of the set selected for future
+    # bulk operations. A selection is always scoped to a single saved run.
+    selected_refs: set[EmbeddingRef] = field(default_factory=set)
+
+    def replace_visible_selection(self, visible_refs, selected_refs):
+        """Update just the current page; retain selections on other pages."""
+        visible = set(visible_refs)
+        selected = set(selected_refs)
+        if not selected <= visible:
+            raise ValueError("selected refs must belong to the visible page")
+        self.selected_refs.difference_update(visible)
+        self.selected_refs.update(selected)
+
+    def label_targets_for(self, clicked_ref):
+        """Right-click labels the selection only when clicked inside it.
+
+        Preserve the existing selection across pages and filters, while
+        preventing an unselected right-click from silently labelling unrelated
+        rows. The set is a snapshot for use while the context menu is open.
+        """
+        if not isinstance(clicked_ref, EmbeddingRef):
+            raise TypeError("clicked_ref must be an EmbeddingRef")
+        if clicked_ref in self.selected_refs and len(self.selected_refs) > 1:
+            return frozenset(self.selected_refs)
+        return frozenset((clicked_ref,))
+
+    def add_selection(self, refs):
+        self.selected_refs.update(refs)
+
+    def clear_selection(self):
+        self.selected_refs.clear()
+
+    @property
+    def selection_count(self):
+        return len(self.selected_refs)
+
+    def clear_grouping(self):
+        self.grouping_enabled = False
+        self.grouping = None
+        if self.sort_by == "group":
+            self.sort_by, self.descending = "score", True
 
     @property
     def selected(self):
@@ -57,6 +102,8 @@ class DetectionsModel:
         return 0 if self.selected_index is None else self.selected_index + 1
 
     def clear_results(self):
+        self.clear_selection()
+        self.clear_grouping()
         self.run = None
         self.total = 0
         self.page = 0
