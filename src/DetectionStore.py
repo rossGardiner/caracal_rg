@@ -225,9 +225,14 @@ class DetectionStore:
             rows = connection.execute(query, parameters).fetchall()
         return tuple(self._run_from_row(row) for row in rows)
 
-    def count_detections(self, run_id, *, min_score=None, recording_id=None):
+    def count_detections(self, run_id, *, min_score=None, recording_id=None,
+                         cancel_event=None):
         where, parameters = self._filters(run_id, min_score, recording_id)
         with self._connect() as connection:
+            if cancel_event is not None:
+                connection.set_progress_handler(
+                    lambda: int(cancel_event.is_set()), 1000,
+                )
             row = connection.execute(
                 "SELECT COUNT(*) FROM detections" + where, parameters
             ).fetchone()
@@ -273,7 +278,7 @@ class DetectionStore:
     def list_detections(
         self, run_id, *, min_score=None, recording_id=None,
         sort_by="score", descending=True, limit=200, offset=0,
-        sort_value=None, grouping_id=None,
+        sort_value=None, grouping_id=None, cancel_event=None,
     ):
         """Return a stable, globally sorted database page (never page-local sort)."""
         limit, offset = self._page(limit, offset)
@@ -283,6 +288,12 @@ class DetectionStore:
             grouping_id=grouping_id,
         )
         with self._connect() as connection:
+            if cancel_event is not None:
+                # Abort expensive sorts when a newer table request supersedes
+                # this one; otherwise the one-worker queue can lag behind.
+                connection.set_progress_handler(
+                    lambda: int(cancel_event.is_set()), 1000,
+                )
             if needs_function:
                 connection.create_function("detection_sort_value", 2, sort_value)
             rows = connection.execute(

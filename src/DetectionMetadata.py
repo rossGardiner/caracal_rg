@@ -28,6 +28,20 @@ class DetectionMetadata:
         """Human labels for the currently viewed classifier (not predictions)."""
         self._labels = dict(labels)
 
+    def snapshot(self):
+        """Freeze the current context for a background sort/page/export job.
+
+        Explorer can activate a different pipeline or labels can be edited
+        before a query completes. Each request must use one consistent view
+        of the recording lookup and human-label mapping.
+        """
+        copy = DetectionMetadata()
+        copy.space = self.space
+        copy.grid = self.grid
+        copy._packets = self._packets.copy()
+        copy._labels = self._labels.copy()
+        return copy
+
     def sort_value(self, run, field, recording_id, chunk_index):
         """Return exactly the value shown in a sortable metadata column.
 

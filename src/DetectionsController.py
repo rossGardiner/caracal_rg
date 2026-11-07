@@ -57,6 +57,12 @@ class DetectionsController(QObject):
         self._page_groups = ()
         self._selection_request_id = 0
         self._selection_cancel_event = None
+        self._page_request_id = 0
+        self._page_cancel_event = None
+        self._page_loading = False
+        self.page_jobs = LatestJobRunner(name="detection-pages", parent=self)
+        self.page_jobs.ready.connect(self._page_ready)
+        self.page_jobs.failed.connect(self._page_failed)
         self.selection_jobs = LatestJobRunner(name="detection-selection", parent=self)
         self.selection_jobs.ready.connect(self._selection_ready)
         self.selection_jobs.failed.connect(self._selection_failed)
@@ -137,7 +143,7 @@ class DetectionsController(QObject):
             {item.ref: item.label.name.title() for item in definition.labels}
             if definition is not None else {}
         )
-        if self.model.run is not None and self.model.rows:
+        if self.model.run is not None and (self.model.rows or self._page_loading):
             selected = self.model.selected_index
             self._load_page(
                 self.model.page,
@@ -247,7 +253,8 @@ class DetectionsController(QObject):
 
     def _update_export_enabled(self):
         self.view.set_export_state(
-            available=self.model.run is not None and not self.model.scanning,
+            available=(self.model.run is not None and not self.model.scanning
+                       and not self._page_loading),
             running=self._exporting,
             cancelling=(
                 self._export_cancel_event is not None
@@ -448,7 +455,7 @@ class DetectionsController(QObject):
 
     @Slot(int)
     def change_page(self, change):
-        if self.model.run is None:
+        if self.model.run is None or self._page_loading:
             return
         page = self.model.page + int(change)
         if 0 <= page < self._page_count():
@@ -457,67 +464,130 @@ class DetectionsController(QObject):
     def _page_count(self):
         return (self.model.total + PAGE_SIZE - 1) // PAGE_SIZE
 
+    def _cancel_page_request(self):
+        """Invalidate queued results and interrupt a superseded SQLite query."""
+        self._page_request_id += 1
+        if self._page_cancel_event is not None:
+            self._page_cancel_event.set()
+        self._page_cancel_event = None
+        self._page_loading = False
+
     def _load_page(self, page, *, select_local=0, open_in_explorer=False):
+        """Fetch and globally sort a detection page without blocking Qt.
+
+        Snapshot all inputs on the GUI thread. Only the latest request can
+        update the model/view, even if a different run or pipeline is selected
+        while SQLite is sorting a large saved scan.
+        """
         run = self.model.run
         if run is None:
             return
-        try:
-            total = self.store.count_detections(
-                run.run_id, min_score=self.model.min_score,
-                recording_id=self.model.recording_id,
+        self._cancel_page_request()
+        request_id = self._page_request_id
+        cancel_event = Event()
+        self._page_cancel_event = cancel_event
+        self._page_loading = True
+
+        min_score = self.model.min_score
+        recording_id = self.model.recording_id
+        sort_by = self.model.sort_by
+        descending = self.model.descending
+        grouping_id = (self.model.grouping.grouping_id
+                       if self.model.grouping is not None else None)
+        metadata = self.metadata.snapshot()
+        sort_value = self._sort_value(run, metadata=metadata, sort_by=sort_by)
+        store = self.store
+        requested_page = max(0, int(page))
+        selected_local = int(select_local)
+
+        # Hide stale rows while the filter, run, sort, or context changes.
+        # Table headers remain clickable so repeated sorts can supersede work.
+        self.model.rows = ()
+        self.model.selected_index = None
+        self._page_groups = ()
+        self.view.show_page((), ())
+        self.view.show_details(None, None, None)
+        self.view.set_navigation(0, 0, 0, 0)
+        self.view.show_status("Loading detections…")
+        self._update_export_enabled()
+
+        def job():
+            total = store.count_detections(
+                run.run_id, min_score=min_score, recording_id=recording_id,
+                cancel_event=cancel_event,
             )
-            page = min(int(page), max(0, (total - 1) // PAGE_SIZE))
-            rows = self.store.list_detections(
-                run.run_id, min_score=self.model.min_score,
-                recording_id=self.model.recording_id,
-                sort_by=self.model.sort_by, descending=self.model.descending,
-                limit=PAGE_SIZE, offset=page * PAGE_SIZE,
-                sort_value=self._sort_value(run),
-                grouping_id=(self.model.grouping.grouping_id
-                             if self.model.grouping is not None else None),
+            if cancel_event.is_set():
+                return None
+            actual_page = min(requested_page, max(0, (total - 1) // PAGE_SIZE))
+            rows = store.list_detections(
+                run.run_id, min_score=min_score, recording_id=recording_id,
+                sort_by=sort_by, descending=descending,
+                limit=PAGE_SIZE, offset=actual_page * PAGE_SIZE,
+                sort_value=sort_value, grouping_id=grouping_id,
+                cancel_event=cancel_event,
             )
-        except Exception as exc:
-            self._show_empty(f"Could not load detections: {exc}")
-            return
-        self.model.set_page(page, rows, total)
-        metadata = tuple(self.metadata.resolve(run, detection) for detection in rows)
-        try:
+            if cancel_event.is_set():
+                return None
+            resolved = tuple(metadata.resolve(run, row) for row in rows)
             membership = (
-                self.store.temporal_groups_for_page(
-                    self.model.grouping.grouping_id, (row.ref for row in rows)
-                ) if self.model.grouping is not None else {}
+                store.temporal_groups_for_page(grouping_id, (row.ref for row in rows))
+                if grouping_id is not None else {}
             )
-        except Exception as exc:
-            self._show_empty(f"Could not load temporal group membership: {exc}")
+            return (run.run_id, actual_page, rows, total, resolved,
+                    tuple(membership.get(row.ref) for row in rows),
+                    selected_local, bool(open_in_explorer))
+
+        self.page_jobs.submit(request_id, job)
+
+    @Slot(int, object)
+    def _page_ready(self, request_id, payload):
+        if request_id != self._page_request_id or payload is None:
             return
-        self._page_groups = tuple(membership.get(row.ref) for row in rows)
+        run_id, page, rows, total, metadata, groups, local, open_in_explorer = payload
+        if self.model.run is None or self.model.run.run_id != run_id:
+            return
+        self._page_cancel_event = None
+        self._page_loading = False
+        self.model.set_page(page, rows, total)
+        self._page_groups = groups
+        if rows:
+            # Filters can shrink the last page while a request is in flight.
+            local = min(max(0, local), len(rows) - 1)
         self.view.show_page(
-            rows, metadata, selected_row=select_local if rows else None,
-            groups=self._page_groups, selected_refs=self.model.selected_refs,
+            rows, metadata, selected_row=local if rows else None,
+            groups=groups, selected_refs=self.model.selected_refs,
         )
         self._show_selection_count()
+        self._update_export_enabled()
         if rows:
-            # Refreshing a page, changing filters or reloading metadata must
-            # not trigger playback. Only explicit navigation should do that.
-            self._select_row(select_local, open_in_explorer=open_in_explorer)
-        if not rows:
+            # Ordinary page refresh/sort must never start audio playback.
+            self._select_row(local, open_in_explorer=open_in_explorer)
+        else:
             self.view.show_details(None, None, None)
             self.view.set_navigation(0, total, page, self._page_count())
-            self.view.show_status("No detections match these filters." if total == 0 else "No results in this page.")
-        else:
-            self.view.show_status(self._compatibility_status())
+            self.view.show_status(
+                "No detections match these filters." if total == 0
+                else "No results in this page."
+            )
 
-    def _sort_value(self, run, *, metadata=None):
-        """Live values for columns whose sort keys are not stored in SQLite."""
-        sort_by = self.model.sort_by
-        if sort_by == "group" or sort_by in self.store._NATIVE_SORTS:
+    @Slot(int, str)
+    def _page_failed(self, request_id, message):
+        if request_id != self._page_request_id:
+            return
+        self._show_empty(f"Could not load detections: {message}")
+
+    def _sort_value(self, run, *, metadata=None, sort_by=None):
+        """Live metadata values for columns not stored in SQLite."""
+        field = self.model.sort_by if sort_by is None else sort_by
+        if field == "group" or field in self.store._NATIVE_SORTS:
             return None
         source = self.metadata if metadata is None else metadata
         return lambda recording_id, chunk_index: source.sort_value(
-            run, sort_by, recording_id, chunk_index,
+            run, field, recording_id, chunk_index,
         )
 
     def _show_empty(self, message):
+        self._cancel_page_request()
         self._page_groups = ()
         self.model.set_page(0, (), 0)
         self._update_export_enabled()
@@ -747,7 +817,7 @@ class DetectionsController(QObject):
         self._move(1)
 
     def _move(self, amount):
-        if self.model.total == 0:
+        if self._page_loading or self.model.total == 0:
             return
         current = self.model.selected_index
         target = (0 if current is None else current + amount)
@@ -935,11 +1005,7 @@ class DetectionsController(QObject):
                          if scope == "selected" else None)
         # Snapshot active context and labels before entering the worker thread;
         # switching classifier/pipeline while exporting must not affect CSV rows.
-        metadata = DetectionMetadata()
-        metadata.set_context(
-            self.metadata.space, tuple(self.metadata._packets.values()), self.metadata.grid
-        )
-        metadata.set_labels(dict(self.metadata._labels))
+        metadata = self.metadata.snapshot()
         filters = dict(
             min_score=self.model.min_score if filtered else None,
             recording_id=self.model.recording_id if filtered else None,
@@ -1017,6 +1083,8 @@ class DetectionsController(QObject):
         )
 
     def shutdown(self):
+        self._cancel_page_request()
+        self.page_jobs.shutdown()
         self._cancel_selection_request()
         self.selection_jobs.shutdown()
         self._cancel_grouping_request()
