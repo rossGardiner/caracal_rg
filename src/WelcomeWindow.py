@@ -9,14 +9,14 @@ import os
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QVBoxLayout, QWidget,
 )
 
 # Set these to the canonical URLs before packaging a customer build.
 # Environment variables are supported for development and testing.
-WIKI_URL = ""
-DEVELOPER_DOCS_URL = ""
+WIKI_URL = "https://rossgardiner.github.io/caracal_rg/wiki.html"
+DEVELOPER_DOCS_URL = "https://rossgardiner.github.io/caracal_rg/files.html"
 
 
 def open_documentation(parent, *, developer=False):
@@ -50,38 +50,20 @@ def add_documentation_menu(window):
     return wiki, developer
 
 
-class WelcomeWindow(QMainWindow):
-    """Shown only when no project is loaded; no dockable workspaces exist."""
+class WelcomePage(QWidget):
+    """Getting Started page shown inside the persistent Caracal main window."""
 
     new_project_requested = Signal()
     open_project_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("caracal_welcome_window")
-        self.setWindowTitle("Caracal — Getting Started")
-        self.resize(860, 620)
-        self.setMinimumSize(520, 420)
-
-        file_menu = self.menuBar().addMenu("&File")
-        self.new_project_action = QAction("New Project", self)
-        self.new_project_action.setShortcut("Ctrl+N")
-        self.open_project_action = QAction("Open Project…", self)
-        self.open_project_action.setShortcut("Ctrl+O")
-        file_menu.addAction(self.new_project_action)
-        file_menu.addAction(self.open_project_action)
-        self.new_project_action.triggered.connect(lambda _checked=False: self.new_project_requested.emit())
-        self.open_project_action.triggered.connect(lambda _checked=False: self.open_project_requested.emit())
-        add_documentation_menu(self)
-
-        root = QWidget(self)
-        root.setObjectName("getting_started_page")
-        self.setCentralWidget(root)
-        outer = QVBoxLayout(root)
+        self.setObjectName("getting_started_page")
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 24, 24, 24)
         outer.addStretch(1)
 
-        card = QFrame(root)
+        card = QFrame(self)
         card.setObjectName("getting_started_card")
         card.setMaximumWidth(620)
         card.setStyleSheet(
@@ -98,7 +80,7 @@ class WelcomeWindow(QMainWindow):
         content.addWidget(title)
 
         subtitle = QLabel(
-            "No project is open. Choose File → New Project to begin, or open an existing one.",
+            "Create or open a project.",
             card,
         )
         subtitle.setWordWrap(True)

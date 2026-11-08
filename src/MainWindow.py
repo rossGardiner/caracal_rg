@@ -20,8 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.PipelineView import PipelineView
-from src.WelcomeWindow import add_documentation_menu
+from src.WelcomeWindow import WelcomePage, add_documentation_menu
 
 
 class _WorkspaceTitleBar(QWidget):
@@ -148,7 +147,7 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
-        explorer_view: QWidget,
+        explorer_view: QWidget | None = None,
         pipeline_view: QWidget | None = None,
         active_learning_view: QWidget | None = None,
         terminal_view: QWidget | None = None,
@@ -158,15 +157,12 @@ class MainWindow(QMainWindow):
     ):
         super().__init__(parent)
 
-        if not isinstance(explorer_view, QWidget):
+        if explorer_view is not None and not isinstance(explorer_view, QWidget):
             raise TypeError(
                 "explorer_view must be a QWidget"
             )
 
-        if pipeline_view is None:
-            pipeline_view = PipelineView()
-
-        if not isinstance(pipeline_view, QWidget):
+        if pipeline_view is not None and not isinstance(pipeline_view, QWidget):
             raise TypeError(
                 "pipeline_view must be a QWidget"
             )
@@ -207,45 +203,25 @@ class MainWindow(QMainWindow):
         # top-level windows rather than floating QDockWidget tool windows.
         self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks)
 
-        self.explorer_dock = self._add_workspace(
-            title="Explorer",
-            object_name="explorer_workspace_dock",
-            view=self.explorer_view,
-        )
-        self.pipeline_dock = self._add_workspace(
-            title="Pipelines",
-            object_name="pipelines_workspace_dock",
-            view=self.pipeline_view,
-        )
-
+        # The main window exists before and after any project. Its central
+        # welcome page remains alive while project-owned docks come and go.
+        self.explorer_dock = None
+        self.pipeline_dock = None
         self.active_learning_dock = None
-        if self.active_learning_view is not None:
-            self.active_learning_dock = self._add_workspace(
-                title="Active Learning",
-                object_name="active_learning_workspace_dock",
-                view=self.active_learning_view,
-            )
-
         self.detections_dock = None
-        if self.detections_view is not None:
-            self.detections_dock = self._add_workspace(
-                title="Detections",
-                object_name="detections_workspace_dock",
-                view=self.detections_view,
-            )
-
         self.terminal_dock = None
-        if self.terminal_view is not None:
-            self.terminal_dock = self._add_workspace(
-                title="Terminal",
-                object_name="terminal_workspace_dock",
-                view=self.terminal_view,
-            )
-
         self._create_project_menu()
         self._create_view_menu()
         add_documentation_menu(self)
-        self.reset_workspace_layout()
+        self.welcome_page = WelcomePage(self)
+        self.setCentralWidget(self.welcome_page)
+        self.show_welcome()
+        if explorer_view is not None:
+            self.attach_project_views(
+                explorer_view=explorer_view, pipeline_view=pipeline_view,
+                active_learning_view=active_learning_view,
+                detections_view=detections_view, terminal_view=terminal_view,
+            )
 
         self.setWindowTitle(
             "Caracal"
@@ -263,6 +239,78 @@ class MainWindow(QMainWindow):
             )
         else:
             self.resize(1450, 900)
+
+    def attach_project_views(self, *, explorer_view, pipeline_view,
+                             active_learning_view=None, detections_view=None,
+                             terminal_view=None):
+        """Install a project's independent views into this *same* window."""
+        if self._workspace_docks:
+            raise RuntimeError("Close the current project before attaching another")
+        if not isinstance(explorer_view, QWidget) or not isinstance(pipeline_view, QWidget):
+            raise TypeError("Explorer and Pipelines views are required")
+        self.explorer_view = explorer_view
+        self.pipeline_view = pipeline_view
+        self.active_learning_view = active_learning_view
+        self.detections_view = detections_view
+        self.terminal_view = terminal_view
+        self.takeCentralWidget()  # Keep self.welcome_page alive for next Close.
+        self.welcome_page.hide()
+        self.explorer_dock = self._add_workspace("Explorer", "explorer_workspace_dock", explorer_view)
+        self.pipeline_dock = self._add_workspace("Pipelines", "pipelines_workspace_dock", pipeline_view)
+        self.active_learning_dock = (
+            self._add_workspace("Active Learning", "active_learning_workspace_dock", active_learning_view)
+            if active_learning_view is not None else None
+        )
+        self.detections_dock = (
+            self._add_workspace("Detections", "detections_workspace_dock", detections_view)
+            if detections_view is not None else None
+        )
+        self.terminal_dock = (
+            self._add_workspace("Terminal", "terminal_workspace_dock", terminal_view)
+            if terminal_view is not None else None
+        )
+        self._populate_workspace_actions()
+        self.reset_workspace_layout()
+        self._set_project_actions(True)
+
+    def clear_project_views(self):
+        """Detach (without deleting) old project docks; caller retires them safely."""
+        for dock in tuple(self._detached_windows):
+            self._redock_workspace(dock)
+        docks = tuple(self._workspace_docks)
+        for dock in docks:
+            dock.hide()
+            self.removeDockWidget(dock)
+            dock.setParent(None)
+        self._workspace_docks.clear()
+        self._view_docks.clear()
+        self._workspace_actions.clear()
+        self._detached_windows.clear()
+        self._dock_return_areas.clear()
+        self._populate_workspace_actions()
+        self.explorer_dock = self.pipeline_dock = None
+        self.active_learning_dock = self.detections_dock = self.terminal_dock = None
+        self.explorer_view = self.pipeline_view = None
+        self.active_learning_view = self.detections_view = self.terminal_view = None
+        self.show_welcome()
+        return docks
+
+    def _set_project_actions(self, is_open):
+        for action in (self.save_project_action, self.save_as_project_action,
+                       self.close_project_action):
+            action.setEnabled(is_open)
+        self.workspace_toolbar.setVisible(is_open)
+        self.view_menu.menuAction().setVisible(is_open)
+
+    def show_welcome(self):
+        if self._workspace_docks:
+            raise RuntimeError("Cannot display Getting Started over an open project")
+        if self.centralWidget() is not self.welcome_page:
+            self.setCentralWidget(self.welcome_page)
+        self.welcome_page.show()
+        self.setWindowTitle("Caracal")
+        self._set_project_actions(False)
+        self.statusBar().clearMessage()
 
     def _add_workspace(
         self,
@@ -354,6 +402,7 @@ class MainWindow(QMainWindow):
         """Keep every workspace accessible even when its dock is hidden."""
 
         view_menu = self.menuBar().addMenu("&View")
+        self.view_menu = view_menu
         workspace_toolbar = QToolBar("Workspaces", self)
         workspace_toolbar.setObjectName("workspace_switcher_toolbar")
         workspace_toolbar.setMovable(False)
@@ -364,32 +413,26 @@ class MainWindow(QMainWindow):
         self.addToolBar(workspace_toolbar)
         self.workspace_toolbar = workspace_toolbar
 
+        self.reset_layout_action = QAction("Reset workspace layout", self)
+        self.reset_layout_action.triggered.connect(self.reset_workspace_layout)
+        self._populate_workspace_actions()
+
+    def _populate_workspace_actions(self):
+        """Rebuild actions, so no QAction points at a destroyed project dock."""
+        self.view_menu.clear()
+        self.workspace_toolbar.clear()
+        self._workspace_actions.clear()
         for dock in self._workspace_docks:
-            action = QAction(dock.windowTitle(), self)
+            action = QAction(dock.windowTitle(), self.view_menu)
             action.setCheckable(True)
-            action.toggled.connect(
-                lambda visible, d=dock: self._set_workspace_visible(d, visible)
-            )
-            dock.visibilityChanged.connect(
-                lambda _visible, d=dock: self._sync_workspace_action(d)
-            )
+            action.toggled.connect(lambda visible, d=dock: self._set_workspace_visible(d, visible))
+            dock.visibilityChanged.connect(lambda _visible, d=dock: self._sync_workspace_action(d))
             self._workspace_actions[dock] = action
-            view_menu.addAction(action)
-            workspace_toolbar.addAction(action)
-
-        view_menu.addSeparator()
-
-        reset_action = QAction(
-            "Reset workspace layout",
-            self,
-        )
-        reset_action.triggered.connect(
-            self.reset_workspace_layout
-        )
-        view_menu.addAction(
-            reset_action
-        )
-        self.reset_layout_action = reset_action
+            self.view_menu.addAction(action)
+            self.workspace_toolbar.addAction(action)
+        if self._workspace_docks:
+            self.view_menu.addSeparator()
+            self.view_menu.addAction(self.reset_layout_action)
 
     def _sync_workspace_action(self, dock: QDockWidget):
         action = self._workspace_actions.get(dock)
@@ -551,6 +594,8 @@ class MainWindow(QMainWindow):
         Pipelines and Terminal start hidden to avoid squeezing the two larger
         views; users can reveal them from the Workspaces toolbar or View menu.
         """
+        if not self._workspace_docks:
+            return
         for dock in tuple(self._detached_windows):
             self._redock_workspace(dock)
 
@@ -614,7 +659,7 @@ class MainWindow(QMainWindow):
             or self.pipeline_dock
             or self.terminal_dock
         )
-        if secondary.isVisible() and self.explorer_dock.isVisible():
+        if secondary is not None and self.explorer_dock is not None and secondary.isVisible() and self.explorer_dock.isVisible():
             self.resizeDocks(
                 [self.explorer_dock, secondary],
                 [850, 650],
