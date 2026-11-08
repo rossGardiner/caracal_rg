@@ -4,6 +4,7 @@ from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+from src.ApplicationIdentity import STORAGE_DIRECTORY, LEGACY_STORAGE_DIRECTORY
 import sqlite3
 
 from src.Detection import Detection, DetectionRun, _identity, _score
@@ -155,9 +156,10 @@ class DetectionStore:
     @staticmethod
     def default_path():
         root = os.environ.get("XDG_DATA_HOME")
-        if root:
-            return Path(root) / "caracal" / "detections.sqlite3"
-        return Path.home() / ".local" / "share" / "caracal" / "detections.sqlite3"
+        home = Path(root).expanduser() if root else Path.home() / ".local" / "share"
+        target = home / STORAGE_DIRECTORY / "detections.sqlite3"
+        legacy = home / LEGACY_STORAGE_DIRECTORY / "detections.sqlite3"
+        return legacy if not target.exists() and legacy.exists() else target
 
     @contextmanager
     def _connect(self):

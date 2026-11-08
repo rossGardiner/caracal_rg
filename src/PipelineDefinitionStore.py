@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from src.ApplicationIdentity import STORAGE_DIRECTORY, LEGACY_STORAGE_DIRECTORY
 
 from src.PipelineDefinition import PipelineDefinition
 
@@ -25,7 +26,9 @@ class PipelineDefinitionStore:
         else:
             root = Path.home() / ".config"
 
-        return root / "caracal" / "pipelines.json"
+        target = root / STORAGE_DIRECTORY / "pipelines.json"
+        legacy = root / LEGACY_STORAGE_DIRECTORY / "pipelines.json"
+        return legacy if not target.exists() and legacy.exists() else target
 
     def load(self) -> tuple[PipelineDefinition, ...]:
         """Load all saved user definitions, or return none if absent."""

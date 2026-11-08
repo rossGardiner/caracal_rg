@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressD
 from src.ApplicationTheme import apply_application_theme
 from src.MainWindow import MainWindow
 from src.ProjectFile import ProjectFile
+from src.ApplicationIdentity import APP_NAME
 from src.QtSignalHandler import QtSignalHandler
 
 
@@ -98,7 +99,7 @@ def main():
         dialog = QMessageBox(window)
         dialog.setWindowTitle(title)
         dialog.setText("Save the current project before continuing?")
-        dialog.setInformativeText("Discard will lose changes not saved to a .caracal file.")
+        dialog.setInformativeText("Discard will lose changes not saved to a project file.")
         dialog.setStandardButtons(
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard |
             QMessageBox.StandardButton.Cancel
@@ -113,7 +114,7 @@ def main():
 
     def open_project():
         filename, _ = QFileDialog.getOpenFileName(
-            window, "Open Project", str(Path.home()), "Caracal project (*.caracal)")
+            window, "Open Project", str(Path.home()), ProjectFile.OPEN_FILTER)
         if not filename:
             return
         path = Path(filename).expanduser().resolve()
@@ -143,9 +144,9 @@ def main():
             QMessageBox.warning(window, "Project busy", "Finish the current operation first.")
             return False
         dialog = QMessageBox(window)
-        dialog.setWindowTitle("Close Caracal")
-        dialog.setText("Save the current project before closing Caracal?")
-        dialog.setInformativeText("Changes not saved to a .caracal file will be lost.")
+        dialog.setWindowTitle(f"Close {APP_NAME}")
+        dialog.setText("Save the current project before closing?")
+        dialog.setInformativeText("Changes not saved to a project file will be lost.")
         dialog.setStandardButtons(
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard |
             QMessageBox.StandardButton.Cancel
@@ -202,7 +203,7 @@ def main():
         # Both an opened archive and an untitled NEW project use an isolated
         # temporary directory. An untitled project therefore starts completely
         # empty and cannot accidentally read or overwrite globally saved work.
-        project_directory = tempfile.TemporaryDirectory(prefix="caracal-project-")
+        project_directory = tempfile.TemporaryDirectory(prefix="audio-project-")
         try:
             project_path = Path(project_path).expanduser().resolve() if project_path is not None else None
             project_payload = None
@@ -456,7 +457,7 @@ def main():
 
             # Project snapshots combine editable JSON state with binary model weights
             # and a consistent SQLite backup. Archive creation runs off the UI thread.
-            project_jobs = LatestJobRunner(name="caracal-project-save", parent=window)
+            project_jobs = LatestJobRunner(name="audio-project-save", parent=window)
             project_save_number = 0
             save_progress = None
             pending_after_save = None
@@ -528,15 +529,24 @@ def main():
                         "Finish the current preparation, scan, training, export or benchmark before saving.")
                     return False
                 destination = project_path
+                # Never overwrite a legacy archive with a new-format manifest
+                # and an old extension. Offer a new-name save instead.
+                if destination is not None and destination.suffix.lower() != ProjectFile.EXTENSION:
+                    save_as = True
                 if save_as or destination is None:
-                    proposed = str(destination or (Path.home() / "Caracal Project.caracal"))
+                    suggestion = (destination.with_suffix(ProjectFile.EXTENSION)
+                                  if destination is not None else
+                                  Path.home() / f"Untitled Project{ProjectFile.EXTENSION}")
                     filename, _ = QFileDialog.getSaveFileName(
-                        window, "Save Project", proposed, "Caracal project (*.caracal)")
+                        window, "Save Project", str(suggestion), ProjectFile.SAVE_FILTER)
                     if not filename:
                         return False
                     destination = Path(filename)
-                    if not str(destination).lower().endswith(ProjectFile.EXTENSION):
-                        destination = Path(str(destination) + ProjectFile.EXTENSION)
+                    if destination.suffix.lower() != ProjectFile.EXTENSION:
+                        if destination.suffix.lower() == ProjectFile.LEGACY_EXTENSION:
+                            destination = destination.with_suffix(ProjectFile.EXTENSION)
+                        else:
+                            destination = Path(str(destination) + ProjectFile.EXTENSION)
                 try:
                     # Snapshot all mutable UI state on the Qt thread. The worker must
                     # never read a live Qt widget or controller.
@@ -587,7 +597,7 @@ def main():
                     return
                 finish_project_save()
                 project_path = Path(path)
-                window.setWindowTitle(f"{project_path.stem} — Caracal")
+                window.setWindowTitle(f"{project_path.stem} — {APP_NAME}")
                 window.statusBar().showMessage(f"Saved {project_path.name}", 5000)
                 if pending_after_save is not None:
                     callback = pending_after_save
@@ -606,9 +616,9 @@ def main():
             project_jobs.failed.connect(project_failed)
 
             if project_payload is None:
-                window.setWindowTitle("Untitled Project — Caracal")
+                window.setWindowTitle(f"Untitled Project — {APP_NAME}")
             if project_payload is not None:
-                window.setWindowTitle(f"{project_path.stem} — Caracal")
+                window.setWindowTitle(f"{project_path.stem} — {APP_NAME}")
 
                 def restore_project_session():
                     if not session_alive:

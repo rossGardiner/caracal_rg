@@ -1,4 +1,4 @@
-"""Project-free landing screen and links to Caracal documentation.
+"""Project-free landing screen and documentation links.
 
 The landing screen does not construct a workspace, start capture, or open
 user-specific stores. New/Open are handled by the application entry point.
@@ -22,8 +22,9 @@ DEVELOPER_DOCS_URL = "https://rossgardiner.github.io/caracal_rg/files.html"
 def open_documentation(parent, *, developer=False):
     """Open configured documentation in the system browser, never guess a URL."""
     label = "Developer Documentation" if developer else "Wiki"
-    variable = "CARACAL_DEVELOPER_DOCS_URL" if developer else "CARACAL_WIKI_URL"
-    address = os.environ.get(variable) or (
+    variable = "AUDIO_ANALYSIS_DEVELOPER_DOCS_URL" if developer else "AUDIO_ANALYSIS_WIKI_URL"
+    legacy_variable = "CARACAL_DEVELOPER_DOCS_URL" if developer else "CARACAL_WIKI_URL"
+    address = os.environ.get(variable) or os.environ.get(legacy_variable) or (
         DEVELOPER_DOCS_URL if developer else WIKI_URL
     )
     url = QUrl(address)
@@ -31,7 +32,7 @@ def open_documentation(parent, *, developer=False):
         QMessageBox.information(
             parent, f"{label} unavailable",
             f"The {label.lower()} link has not been configured. "
-            f"Set {variable} or update src/WelcomeWindow.py before building Caracal.",
+            f"Set {variable} or update src/WelcomeWindow.py before building the application.",
         )
         return
     if not QDesktopServices.openUrl(url):
@@ -51,7 +52,7 @@ def add_documentation_menu(window):
 
 
 class WelcomePage(QWidget):
-    """Getting Started page shown inside the persistent Caracal main window."""
+    """Getting Started page shown inside the persistent application main window."""
 
     new_project_requested = Signal()
     open_project_requested = Signal()

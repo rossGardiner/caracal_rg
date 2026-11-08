@@ -1,6 +1,6 @@
-"""Versioned, portable Caracal project archives.
+"""Versioned, portable application project archives.
 
-A .caracal file is a ZIP containing a readable project.json, a consistent
+A .audioproj file is a ZIP containing a readable project.json, a consistent
 SQLite snapshot, and any fitted classifier .pt files. External recordings,
 models, and embedding caches are intentionally *referenced*, not duplicated.
 """
@@ -17,11 +17,19 @@ from zipfile import ZIP_DEFLATED, ZipFile, BadZipFile
 
 from src.ActiveLearningClassifierDefinition import ActiveLearningClassifierDefinition
 from src.PipelineDefinition import PipelineDefinition
+from src.ApplicationIdentity import (
+    PROJECT_EXTENSION, PROJECT_FORMAT, LEGACY_PROJECT_EXTENSION, LEGACY_PROJECT_FORMAT,
+)
 
 
 class ProjectFile:
     VERSION = 1
-    EXTENSION = ".caracal"
+    EXTENSION = PROJECT_EXTENSION
+    LEGACY_EXTENSION = LEGACY_PROJECT_EXTENSION
+    FORMAT = PROJECT_FORMAT
+    LEGACY_FORMAT = LEGACY_PROJECT_FORMAT
+    OPEN_FILTER = f"Project files (*{EXTENSION} *{LEGACY_EXTENSION});;All files (*)"
+    SAVE_FILTER = f"Project files (*{EXTENSION})"
     MANIFEST = "project.json"
     DETECTIONS = "detections.sqlite3"
     # Avoid extracting unexpected paths, and reject huge decompression bombs.
@@ -37,10 +45,10 @@ class ProjectFile:
 
     @classmethod
     def _validate_manifest(cls, payload):
-        if not isinstance(payload, dict) or payload.get("format") != "caracal-project":
-            raise ValueError("Not a Caracal project file")
+        if not isinstance(payload, dict) or payload.get("format") not in (cls.FORMAT, cls.LEGACY_FORMAT):
+            raise ValueError("Not a supported project file")
         if payload.get("version") != cls.VERSION:
-            raise ValueError(f"Unsupported Caracal project version: {payload.get('version')!r}")
+            raise ValueError(f"Unsupported project version: {payload.get('version')!r}")
         if not isinstance(payload.get("pipelines"), list):
             raise ValueError("Project pipelines must be a list")
         if not isinstance(payload.get("classifiers"), list):
@@ -70,7 +78,7 @@ class ProjectFile:
         pipelines = tuple(pipelines)
         classifiers = tuple(classifiers)
         payload = {
-            "format": "caracal-project",
+            "format": cls.FORMAT,
             "version": cls.VERSION,
             "saved_utc": datetime.now(timezone.utc).isoformat(),
             "external_files": (
@@ -88,11 +96,11 @@ class ProjectFile:
         if len(manifest) > cls.MAX_MANIFEST_BYTES:
             raise ValueError("Project metadata is too large to save")
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=".caracal-", suffix=".tmp", dir=path.parent)
+        fd, temp_name = tempfile.mkstemp(prefix=".audio-project-", suffix=".tmp", dir=path.parent)
         os.close(fd)
         temp_path = Path(temp_name)
         try:
-            with tempfile.TemporaryDirectory(prefix="caracal-snapshot-") as temporary:
+            with tempfile.TemporaryDirectory(prefix="audio-project-snapshot-") as temporary:
                 db_path = Path(temporary) / cls.DETECTIONS
                 # SQLite backup is a transactionally consistent snapshot even
                 # when its source uses WAL (a plain copy would miss WAL rows).
@@ -146,7 +154,7 @@ class ProjectFile:
                         raise ValueError("Project classifier model is too large")
                 return payload
         except (BadZipFile, KeyError) as exc:
-            raise ValueError(f"Invalid Caracal project archive: {exc}") from exc
+            raise ValueError(f"Invalid project archive: {exc}") from exc
 
     @classmethod
     def open_into(cls, path, directory):

@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 from PySide6.QtWidgets import QApplication
 
 
-_STYLESHEET = Path(__file__).resolve().parent / "styles" / "caracal.qss"
+_STYLESHEET = Path(__file__).resolve().parent / "styles" / "application.qss"
 _FONT_FAMILIES = ("Roboto", "Inter", "Noto Sans", "Segoe UI", "Arial")
 
 

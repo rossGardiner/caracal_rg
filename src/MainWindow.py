@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.WelcomeWindow import WelcomePage, add_documentation_menu
+from src.ApplicationIdentity import APP_NAME
 
 
 class _WorkspaceTitleBar(QWidget):
@@ -121,7 +122,7 @@ class _DetachedWorkspaceWindow(QMainWindow):
         super().__init__(None, Qt.WindowType.Window)
         self._owner = owner
         self._dock = dock
-        self.setWindowTitle(f"{dock.windowTitle()} — Caracal")
+        self.setWindowTitle(f"{dock.windowTitle()} — {APP_NAME}")
 
         toolbar = QToolBar("Workspace", self)
         toolbar.setMovable(False)
@@ -224,7 +225,7 @@ class MainWindow(QMainWindow):
             )
 
         self.setWindowTitle(
-            "Caracal"
+            APP_NAME
         )
 
         # The preferred opening size must also fit on smaller displays.
@@ -308,7 +309,7 @@ class MainWindow(QMainWindow):
         if self.centralWidget() is not self.welcome_page:
             self.setCentralWidget(self.welcome_page)
         self.welcome_page.show()
-        self.setWindowTitle("Caracal")
+        self.setWindowTitle(APP_NAME)
         self._set_project_actions(False)
         self.statusBar().clearMessage()
 

@@ -18,6 +18,7 @@ from src.DetectionStore import DetectionStore
 from src.DetectionsModel import DetectionsModel, PAGE_SIZE
 from src.DetectionsView import DetectionsView
 from src.LatestJobRunner import LatestJobRunner
+from src.ApplicationIdentity import ORGANIZATION_NAME, SETTINGS_NAME
 
 
 class DetectionsController(QObject):
@@ -56,14 +57,23 @@ class DetectionsController(QObject):
         self._group_cancel_event = None
         self._page_groups = ()
         # Checked by default, but remember an explicit choice across launches.
-        self._settings = QSettings("Caracal", "Caracal")
+        self._settings = QSettings(ORGANIZATION_NAME, SETTINGS_NAME)
+        previous_settings = QSettings("Caracal", "Caracal")  # Legacy preference migration only.
         self._grouping_preferred = (
             bool(grouping_preference) if grouping_preference is not None
-            else self._settings.value("detections/group_colours", True, type=bool)
+            else self._settings.value(
+                "detections/group_colours",
+                previous_settings.value("detections/group_colours", True, type=bool),
+                type=bool,
+            )
         )
         self.model.grouping_gap_s = (
             float(grouping_gap) if grouping_gap is not None
-            else self._settings.value("detections/group_gap_s", 10.0, type=float)
+            else self._settings.value(
+                "detections/group_gap_s",
+                previous_settings.value("detections/group_gap_s", 10.0, type=float),
+                type=float,
+            )
         )
         self.view.group_gap.setValue(self.model.grouping_gap_s)
         self.view.set_grouping_state(self._grouping_preferred, message="")
