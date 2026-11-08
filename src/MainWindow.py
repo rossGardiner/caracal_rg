@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.PipelineView import PipelineView
+from src.WelcomeWindow import add_documentation_menu
 
 
 class _WorkspaceTitleBar(QWidget):
@@ -243,6 +244,7 @@ class MainWindow(QMainWindow):
 
         self._create_project_menu()
         self._create_view_menu()
+        add_documentation_menu(self)
         self.reset_workspace_layout()
 
         self.setWindowTitle(
@@ -332,13 +334,19 @@ class MainWindow(QMainWindow):
     def _create_project_menu(self):
         """Project actions are implemented by the application composition root."""
         project_menu = self.menuBar().addMenu("&File")
+        self.new_project_action = QAction("New Project", self)
+        self.new_project_action.setShortcut("Ctrl+N")
         self.open_project_action = QAction("Open Project…", self)
         self.save_project_action = QAction("Save Project", self)
         self.save_as_project_action = QAction("Save Project As…", self)
+        project_menu.addAction(self.new_project_action)
         project_menu.addAction(self.open_project_action)
         project_menu.addSeparator()
         project_menu.addAction(self.save_project_action)
         project_menu.addAction(self.save_as_project_action)
+        project_menu.addSeparator()
+        self.close_project_action = QAction("Close Project", self)
+        project_menu.addAction(self.close_project_action)
         self.save_project_action.setShortcut("Ctrl+S")
         self.open_project_action.setShortcut("Ctrl+O")
 

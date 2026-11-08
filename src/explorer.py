@@ -11,61 +11,115 @@ from PySide6.QtCore import QByteArray, QProcess, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressDialog
 
 from src.ApplicationTheme import apply_application_theme
-from src.ActiveLearner import ReviewCandidate, ReviewReason
-from src.EmbeddingCorpus import EmbeddingRef
-from src.ActiveLearningModel import ActiveLearningStatus
-from src.LatestJobRunner import LatestJobRunner
-from src.ProjectFile import ProjectFile
-from src.ActiveLearningClassifierStore import ActiveLearningClassifierStore
-from src.ActiveLearningController import ActiveLearningController
-from src.ActiveLearningModel import ActiveLearningModel
-from src.ActiveLearningView import ActiveLearningView
-from src.QuickReviewController import QuickReviewController
-from src.QuickReviewView import QuickReviewView
-from src.ExplorerController import ExplorerController
-from src.DetectionStore import DetectionStore
-from src.DetectionsModel import DetectionsModel
-from src.DetectionsView import DetectionsView
-from src.DetectionsController import DetectionsController
-from src.ExplorerView import ExplorerView
-from src.ExplorerModel import ExplorerModel
-from src.MainWindow import MainWindow
-from src.PipelineController import PipelineController
-from src.PipelineDefinitions import get_pipeline_definitions
-from src.PipelineDefinitionStore import PipelineDefinitionStore
-from src.PipelineFactory import PipelineFactory
-from src.PipelineRunner import PipelineRunner
-from src.PipelineRunModel import PipelineRunModel
-from src.PipelineView import PipelineView
-from src.QtSignalHandler import QtSignalHandler
-from src.TerminalView import TerminalView
+from src.WelcomeWindow import WelcomeWindow
+
+
+def _start_caracal(arguments):
+    """Launch a fresh isolated process instead of replacing live Qt workers."""
+    if getattr(sys, "frozen", False):
+        program = sys.executable
+        command = list(arguments)
+        directory = str(Path(sys.executable).resolve().parent)
+    else:
+        program = sys.executable
+        command = ["-m", "src.main", *arguments]
+        directory = str(Path(__file__).resolve().parent.parent)
+    started = QProcess.startDetached(program, command, directory)
+    # PySide bindings/platforms may return bool or (bool, process_id).
+    return bool(started[0]) if isinstance(started, tuple) else bool(started)
 
 
 def main():
-    """Open the application idle; build pipelines only after a user action."""
+    """Show Getting Started until a new or existing project is requested."""
 
     args_parser = argparse.ArgumentParser(add_help=False)
-    args_parser.add_argument("--project", default=None)
+    project_choice = args_parser.add_mutually_exclusive_group()
+    project_choice.add_argument("--project", default=None)
+    project_choice.add_argument("--new-project", action="store_true")
     options, qt_args = args_parser.parse_known_args(sys.argv[1:])
 
-    # A project is always isolated from the user's regular saved definitions.
-    # Nothing is imported over global configuration. An opened project lives
-    # in a session directory and is persisted only with Save Project.
-    project_directory = None
+    app = QApplication([sys.argv[0], *qt_args])
+    apply_application_theme(app)
+
+    def getting_started():
+        """A light-weight shell with no controllers, views, or dock windows."""
+        welcome = WelcomeWindow()
+
+        def launch(arguments):
+            if not _start_caracal(arguments):
+                QMessageBox.critical(welcome, "Could not start Caracal",
+                                     "Could not open the requested project window.")
+                return
+            app.quit()
+
+        def open_from_welcome():
+            filename, _ = QFileDialog.getOpenFileName(
+                welcome, "Open Project", str(Path.home()), "Caracal project (*.caracal)")
+            if not filename:
+                return
+            try:
+                from src.ProjectFile import ProjectFile
+                ProjectFile.inspect(filename)
+            except Exception as exc:
+                QMessageBox.critical(welcome, "Could not open project", str(exc))
+                return
+            launch(["--project", str(Path(filename).expanduser().resolve())])
+
+        welcome.new_project_requested.connect(lambda: launch(["--new-project"]))
+        welcome.open_project_requested.connect(open_from_welcome)
+        welcome.show()
+        return app.exec()
+
+    # No project means no session and no workspaces. Importantly, Caracal does
+    # not load the old per-user pipeline/classifier stores in this mode.
+    if options.project is None and not options.new_project:
+        return getting_started()
+
+    # Import the project-specific controllers only after entering a project.
+    # The welcome page is usable even when heavy audio/ML modules are slow.
+    from src.ActiveLearner import ReviewCandidate, ReviewReason
+    from src.EmbeddingCorpus import EmbeddingRef
+    from src.ActiveLearningModel import ActiveLearningStatus
+    from src.LatestJobRunner import LatestJobRunner
+    from src.ActiveLearningClassifierStore import ActiveLearningClassifierStore
+    from src.ActiveLearningController import ActiveLearningController
+    from src.ActiveLearningModel import ActiveLearningModel
+    from src.ActiveLearningView import ActiveLearningView
+    from src.QuickReviewController import QuickReviewController
+    from src.QuickReviewView import QuickReviewView
+    from src.ExplorerController import ExplorerController
+    from src.DetectionStore import DetectionStore
+    from src.DetectionsModel import DetectionsModel
+    from src.DetectionsView import DetectionsView
+    from src.DetectionsController import DetectionsController
+    from src.ExplorerView import ExplorerView
+    from src.ExplorerModel import ExplorerModel
+    from src.MainWindow import MainWindow
+    from src.PipelineController import PipelineController
+    from src.PipelineDefinitions import get_pipeline_definitions
+    from src.PipelineDefinitionStore import PipelineDefinitionStore
+    from src.PipelineFactory import PipelineFactory
+    from src.PipelineRunner import PipelineRunner
+    from src.PipelineRunModel import PipelineRunModel
+    from src.PipelineView import PipelineView
+    from src.QtSignalHandler import QtSignalHandler
+    from src.TerminalView import TerminalView
+    from src.ProjectFile import ProjectFile
+
+    # Both an opened archive and an untitled NEW project use an isolated
+    # temporary directory. An untitled project therefore starts completely
+    # empty and cannot accidentally read or overwrite globally saved work.
+    project_directory = tempfile.TemporaryDirectory(prefix="caracal-project-")
     project_path = Path(options.project).expanduser().resolve() if options.project else None
     project_payload = None
     if project_path is not None:
-        project_directory = tempfile.TemporaryDirectory(prefix="caracal-open-project-")
         try:
             project_payload = ProjectFile.open_into(project_path, project_directory.name)
         except Exception as exc:
             project_directory.cleanup()
-            error_app = QApplication([sys.argv[0]])
             QMessageBox.critical(None, "Could not open project", f"{project_path}\n\n{exc}")
-            return 1
+            return getting_started()
 
-    app = QApplication([sys.argv[0], *qt_args])
-    apply_application_theme(app)
     session = project_payload["session"] if project_payload is not None else {}
 
     terminal_view = TerminalView()
@@ -100,7 +154,8 @@ def main():
         except (TypeError, ValueError) as exc:
             QMessageBox.critical(None, "Project incompatible", str(exc))
             terminal_view.shutdown()
-            return 1
+            project_directory.cleanup()
+            return getting_started()
     user_pipeline_definitions = []
     for definition in saved_pipeline_definitions:
         if definition.name in builtin_names:
@@ -137,7 +192,8 @@ def main():
         if project_payload is not None:
             QMessageBox.critical(None, "Project incompatible", str(exc))
             terminal_view.shutdown()
-            return 1
+            project_directory.cleanup()
+            return getting_started()
         print(
             f"Could not load saved active-learning classifiers from "
             f"{classifier_store.path}: {exc}",
@@ -239,7 +295,7 @@ def main():
         active_learning_model=active_learning_model,
         classifier_store=classifier_store,
         parent=detections_view,
-        grouping_preference=session.get("grouping_enabled"),
+        grouping_preference=session.get("grouping_enabled", True),
         grouping_gap=session.get("grouping_gap_s"),
     )
     active_learning_controller.workspace_state_changed.connect(
@@ -328,7 +384,7 @@ def main():
     close_after_save = False
     close_allowed = False
     restarting = False
-    open_after_save = None
+    pending_transition = None  # None, or process arguments after Save (including []).
 
     def collect_project_session():
         _space, ref = explorer_controller.current_embedding_selection()
@@ -428,6 +484,8 @@ def main():
         window.save_project_action.setEnabled(False)
         window.save_as_project_action.setEnabled(False)
         window.open_project_action.setEnabled(False)
+        window.new_project_action.setEnabled(False)
+        window.close_project_action.setEnabled(False)
         project_jobs.submit(number, partial(
             ProjectFile.save, destination, pipelines=pipelines,
             classifiers=classifiers, classifier_store=classifier_store,
@@ -443,30 +501,33 @@ def main():
         window.save_project_action.setEnabled(True)
         window.save_as_project_action.setEnabled(True)
         window.open_project_action.setEnabled(True)
+        window.new_project_action.setEnabled(True)
+        window.close_project_action.setEnabled(True)
 
     def project_saved(number, path):
-        nonlocal project_path, close_after_save, close_allowed, open_after_save
+        nonlocal project_path, close_after_save, close_allowed, pending_transition
         if number != project_save_number:
             return
         finish_project_save()
         project_path = Path(path)
         window.setWindowTitle(f"{project_path.stem} — Caracal")
         window.statusBar().showMessage(f"Saved {project_path.name}", 5000)
-        if open_after_save is not None:
-            next_path = open_after_save
-            open_after_save = None
-            restart_with_project(next_path)
+        if pending_transition is not None:
+            next_arguments = pending_transition
+            pending_transition = None
+            restart_with_args(next_arguments)
+            return
         if close_after_save:
             close_after_save = False
             close_allowed = True
             window.close()
 
     def project_failed(number, message):
-        nonlocal close_after_save, open_after_save
+        nonlocal close_after_save, pending_transition
         if number != project_save_number:
             return
         close_after_save = False
-        open_after_save = None
+        pending_transition = None
         finish_project_save()
         QMessageBox.critical(window, "Save failed", message)
 
@@ -475,29 +536,44 @@ def main():
     window.save_project_action.triggered.connect(lambda: save_project())
     window.save_as_project_action.triggered.connect(lambda: save_project(save_as=True))
 
-    def restart_with_project(filename):
+    def restart_with_args(arguments):
         nonlocal restarting
-        # Re-launch with the archive in an isolated session. This avoids
-        # swapping SQLite/worker references underneath live MVC controllers.
-        if getattr(sys, "frozen", False):
-            program = sys.executable
-            arguments = ["--project", str(Path(filename).resolve())]
-            working_dir = str(Path(sys.executable).resolve().parent)
-        else:
-            program = sys.executable
-            arguments = ["-m", "src.main", "--project", str(Path(filename).resolve())]
-            working_dir = str(Path(__file__).resolve().parent.parent)
-        if not QProcess.startDetached(program, arguments, working_dir):
-            QMessageBox.critical(window, "Could not open project", "Could not restart Caracal.")
-            return
+        # A new project is isolated, and a closed project returns to a window
+        # with NO workspaces. Never replace Qt workers/SQLite in-process.
+        if not _start_caracal(arguments):
+            QMessageBox.critical(window, "Could not start Caracal",
+                                 "Could not open the requested project window.")
+            return False
         restarting = True
         app.quit()
+        return True
 
-    def open_project():
-        nonlocal open_after_save
+    def request_transition(arguments, description):
+        """Ask before leaving either an untitled or a named project."""
+        nonlocal pending_transition
         if save_progress is not None or is_project_busy():
             QMessageBox.warning(window, "Project busy", "Finish the current operation first.")
             return
+        dialog = QMessageBox(window)
+        dialog.setWindowTitle(description)
+        dialog.setText("Save the current project before continuing?")
+        dialog.setInformativeText("Discard will lose changes not saved to a .caracal file.")
+        dialog.setStandardButtons(
+            QMessageBox.StandardButton.Save |
+            QMessageBox.StandardButton.Discard |
+            QMessageBox.StandardButton.Cancel
+        )
+        dialog.setDefaultButton(QMessageBox.StandardButton.Save)
+        choice = dialog.exec()
+        if choice == QMessageBox.StandardButton.Discard:
+            restart_with_args(arguments)
+        elif choice == QMessageBox.StandardButton.Save:
+            pending_transition = list(arguments)
+            save_project()
+            if save_progress is None:  # Save As cancelled or save couldn't start.
+                pending_transition = None
+
+    def open_project():
         filename, _ = QFileDialog.getOpenFileName(
             window, "Open Project", str(project_path or Path.home()),
             "Caracal project (*.caracal)")
@@ -508,57 +584,34 @@ def main():
         except Exception as exc:
             QMessageBox.critical(window, "Could not open project", str(exc))
             return
-        if project_path is not None:
-            dialog = QMessageBox(window)
-            dialog.setWindowTitle("Open Project")
-            dialog.setText("Save the current project before opening another one?")
-            dialog.setStandardButtons(
-                QMessageBox.StandardButton.Save |
-                QMessageBox.StandardButton.Discard |
-                QMessageBox.StandardButton.Cancel
-            )
-            dialog.setDefaultButton(QMessageBox.StandardButton.Save)
-            choice = dialog.exec()
-            if choice == QMessageBox.StandardButton.Cancel:
-                return
-            if choice == QMessageBox.StandardButton.Save:
-                open_after_save = filename
-                save_project()
-                if save_progress is None:
-                    open_after_save = None
-                return
-        else:
-            choice = QMessageBox.question(
-                window, "Open Project",
-                "Opening a project starts a new Caracal window and closes this one. "
-                "Unsaved changes in this workspace will be lost. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if choice != QMessageBox.StandardButton.Yes:
-                return
-        restart_with_project(filename)
+        resolved = str(Path(filename).expanduser().resolve())
+        if project_path is not None and resolved == str(project_path):
+            window.statusBar().showMessage("That project is already open.", 4000)
+            return
+        request_transition(["--project", resolved], "Open Project")
 
     window.open_project_action.triggered.connect(open_project)
+    window.new_project_action.triggered.connect(
+        lambda: request_transition(["--new-project"], "New Project")
+    )
+    window.close_project_action.triggered.connect(
+        lambda: request_transition([], "Close Project")
+    )
 
     def before_close_project():
-        """An open archive is not an auto-save directory; prevent lost edits."""
+        """Close-window button also protects unsaved NEW projects."""
         nonlocal close_after_save
         if restarting or close_allowed:
             return True
         if save_progress is not None:
             return False
-        if project_path is None:
-            # Without an explicitly named project the default workspace uses
-            # Caracal's existing per-user auto-saving stores.
-            return True
         if is_project_busy():
             QMessageBox.warning(window, "Project busy", "Finish the current operation before closing the project.")
             return False
         dialog = QMessageBox(window)
-        dialog.setWindowTitle("Close Project")
+        dialog.setWindowTitle("Close Caracal")
         dialog.setText("Save this project before closing Caracal?")
-        dialog.setInformativeText("Changes not saved to the .caracal file will be lost.")
+        dialog.setInformativeText("Changes not saved to a .caracal file will be lost.")
         dialog.setStandardButtons(
             QMessageBox.StandardButton.Save |
             QMessageBox.StandardButton.Discard |
@@ -577,6 +630,8 @@ def main():
 
     window.project_before_close = before_close_project
 
+    if project_payload is None:
+        window.setWindowTitle("Untitled Project — Caracal")
     if project_payload is not None:
         window.setWindowTitle(f"{project_path.stem} — Caracal")
 
