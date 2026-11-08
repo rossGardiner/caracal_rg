@@ -31,7 +31,7 @@ class DetectionsController(QObject):
     def __init__(
         self, *, model: DetectionsModel, view: DetectionsView,
         store: DetectionStore, active_learning_model, classifier_store,
-        parent=None,
+        parent=None, grouping_preference=None, grouping_gap=None,
     ):
         super().__init__(parent)
         self.model = model
@@ -57,11 +57,13 @@ class DetectionsController(QObject):
         self._page_groups = ()
         # Checked by default, but remember an explicit choice across launches.
         self._settings = QSettings("Caracal", "Caracal")
-        self._grouping_preferred = self._settings.value(
-            "detections/group_colours", True, type=bool
+        self._grouping_preferred = (
+            bool(grouping_preference) if grouping_preference is not None
+            else self._settings.value("detections/group_colours", True, type=bool)
         )
-        self.model.grouping_gap_s = self._settings.value(
-            "detections/group_gap_s", 10.0, type=float
+        self.model.grouping_gap_s = (
+            float(grouping_gap) if grouping_gap is not None
+            else self._settings.value("detections/group_gap_s", 10.0, type=float)
         )
         self.view.group_gap.setValue(self.model.grouping_gap_s)
         self.view.set_grouping_state(self._grouping_preferred, message="")

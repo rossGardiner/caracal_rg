@@ -241,6 +241,7 @@ class MainWindow(QMainWindow):
                 view=self.terminal_view,
             )
 
+        self._create_project_menu()
         self._create_view_menu()
         self.reset_workspace_layout()
 
@@ -327,6 +328,19 @@ class MainWindow(QMainWindow):
         self._view_docks[id(view)] = dock
 
         return dock
+
+    def _create_project_menu(self):
+        """Project actions are implemented by the application composition root."""
+        project_menu = self.menuBar().addMenu("&File")
+        self.open_project_action = QAction("Open Project…", self)
+        self.save_project_action = QAction("Save Project", self)
+        self.save_as_project_action = QAction("Save Project As…", self)
+        project_menu.addAction(self.open_project_action)
+        project_menu.addSeparator()
+        project_menu.addAction(self.save_project_action)
+        project_menu.addAction(self.save_as_project_action)
+        self.save_project_action.setShortcut("Ctrl+S")
+        self.open_project_action.setShortcut("Ctrl+O")
 
     def _create_view_menu(self):
         """Keep every workspace accessible even when its dock is hidden."""
@@ -632,6 +646,10 @@ class MainWindow(QMainWindow):
     ):
         """Allow composed views to release background resources cleanly."""
 
+        before_close = getattr(self, "project_before_close", None)
+        if callable(before_close) and not before_close():
+            event.ignore()
+            return
         self._closing = True
         for window in tuple(self._detached_windows.values()):
             window.close()
