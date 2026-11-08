@@ -1,0 +1,312 @@
+/*
+ * Audio Analysis UI — a compact slate / sea-glass theme for Qt Widgets.
+ * Inspired by the clean, low-glare approach of QDarkStyleSheet and
+ * the control treatments in Qt's official style-sheet examples.
+ * Original application-specific stylesheet; no external QSS dependency.
+ *
+ * Palette:
+ *   background    #101a25    panel        #172533
+ *   raised        #223547    border       #35495b
+ *   text          #e9f2f6    secondary    #acbecb
+ *   accent        #55cdb7    focus        #80e3d1
+ */
+
+/* Base. Fonts are selected by ApplicationTheme.py, not hard-coded here. */
+QWidget {
+    color: #e9f2f6;
+    background-color: #101a25;
+}
+QMainWindow, QDialog {
+    background-color: #101a25;
+}
+QLabel {
+    background: transparent;
+    color: #dae5ed;
+}
+QLabel:disabled { color: #728697; }
+
+/* Separate workspaces should read as panels, not unmarked white canvases. */
+QDockWidget {
+    border: 1px solid #35495b;
+    background-color: #172533;
+}
+/* Explorer's native QDockWidget title bars. The outer workspaces have a
+   custom title-bar QWidget, themed separately below. */
+QDockWidget::title {
+    background-color: #294354;
+    color: #e9f2f6;
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #55cdb7;
+}
+QDockWidget::close-button, QDockWidget::float-button {
+    background-color: #294354;
+    border: 1px solid #416276;
+    border-radius: 3px;
+}
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {
+    background-color: #3d6072;
+}
+
+/* Outer workspace title bars are QWidget instances, not ::title elements. */
+QWidget#workspace_title_bar {
+    background-color: #294354;
+    border: 1px solid #3d5d70;
+    border-bottom: 2px solid #55cdb7;
+}
+QWidget#workspace_title_bar QLabel#workspace_title_label {
+    background: transparent;
+    color: #f2f9fc;
+    font-weight: 600;
+}
+QWidget#workspace_title_bar QLabel#workspace_drag_grip {
+    background-color: #36576a;
+    color: #a4f1e1;
+    border: 1px solid #538293;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-weight: 700;
+}
+QToolButton#workspace_close_button {
+    border: none;
+    background: transparent;
+    color: #d3e6ee;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 22px;
+    padding: 0;
+    font-weight: 700;
+}
+QToolButton#workspace_close_button:hover {
+    background-color: #4d6675;
+    color: white;
+}
+
+/* These are the actual draggable boundaries between docks. */
+QMainWindow::separator {
+    background-color: #365469;
+    width: 7px;
+    height: 7px;
+}
+QMainWindow::separator:hover {
+    background-color: #55cdb7;
+}
+QSplitter::handle {
+    background-color: #365469;
+}
+QSplitter::handle:horizontal { width: 7px; }
+QSplitter::handle:vertical { height: 7px; }
+QSplitter::handle:hover { background-color: #55cdb7; }
+
+QToolBar {
+    background-color: #182836;
+    border: none;
+    border-bottom: 1px solid #35495b;
+    spacing: 5px;
+    padding: 5px 7px;
+}
+QToolBar::separator {
+    background-color: #416073;
+    width: 1px;
+    margin: 4px 6px;
+}
+QMenuBar {
+    background-color: #182836;
+    border-bottom: 1px solid #35495b;
+    padding: 3px;
+}
+QMenuBar::item {
+    padding: 5px 12px;
+    border-radius: 4px;
+    background: transparent;
+}
+QMenuBar::item:selected { background: #2a4354; }
+QMenu {
+    background-color: #1c2c3b;
+    color: #e9f2f6;
+    border: 1px solid #416073;
+    padding: 4px;
+}
+QMenu::item { padding: 6px 24px 6px 12px; }
+QMenu::item:selected { background-color: #2c5b65; }
+QStatusBar {
+    background-color: #182836;
+    color: #acbecb;
+    border-top: 1px solid #35495b;
+}
+
+QGroupBox {
+    background-color: #172533;
+    border: 1px solid #35495b;
+    border-radius: 7px;
+    margin-top: 14px;
+    padding: 12px 10px 9px 10px;
+    font-weight: 500;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 6px;
+    background-color: #172533;
+    color: #91e6d5;
+}
+
+QPushButton, QToolButton {
+    background-color: #2a4053;
+    color: #eef6fa;
+    border: 1px solid #476275;
+    border-radius: 5px;
+    padding: 6px 11px;
+    min-height: 18px;
+}
+QPushButton:hover, QToolButton:hover {
+    border-color: #64cfbc;
+    background-color: #34556a;
+}
+QPushButton:pressed, QToolButton:pressed {
+    background-color: #25645e;
+    border-color: #55cdb7;
+}
+QPushButton:checked, QToolButton:checked {
+    background-color: #236259;
+    border-color: #55cdb7;
+    color: #f4fffc;
+}
+QPushButton:disabled, QToolButton:disabled {
+    background-color: #1b2b38;
+    border-color: #344555;
+    color: #6f8393;
+}
+QPushButton:focus, QToolButton:focus {
+    border-color: #80e3d1;
+}
+
+QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox,
+QDateEdit, QTimeEdit, QDateTimeEdit {
+    background-color: #101c29;
+    color: #f2f8fb;
+    border: 1px solid #456074;
+    border-radius: 4px;
+    padding: 5px 8px;
+    min-height: 19px;
+    selection-background-color: #246c65;
+}
+QComboBox:hover, QLineEdit:hover, QSpinBox:hover,
+QDoubleSpinBox:hover { border-color: #6c9caa; }
+QComboBox:focus, QLineEdit:focus, QSpinBox:focus,
+QDoubleSpinBox:focus { border: 1px solid #80e3d1; }
+QComboBox:disabled, QLineEdit:disabled, QSpinBox:disabled,
+QDoubleSpinBox:disabled { color: #8091a0; background-color: #1b2936; }
+QComboBox::drop-down { border: none; width: 20px; }
+QComboBox QAbstractItemView {
+    background-color: #1b2d3d;
+    selection-background-color: #286a64;
+    color: #e9f2f6;
+    outline: none;
+}
+
+QTextEdit, QPlainTextEdit, QListView, QTreeView, QTableView {
+    background-color: #0e1924;
+    alternate-background-color: #162534;
+    color: #e1eaf0;
+    border: 1px solid #334d61;
+    border-radius: 4px;
+    selection-background-color: #246c65;
+    selection-color: #ffffff;
+}
+QHeaderView::section {
+    background-color: #233849;
+    color: #cce4ed;
+    padding: 6px;
+    border: 0;
+    border-right: 1px solid #40596d;
+    border-bottom: 1px solid #40596d;
+}
+QScrollArea { border: none; background-color: #101a25; }
+QScrollBar:vertical {
+    background: #142330;
+    width: 12px;
+    margin: 0;
+}
+QScrollBar:horizontal {
+    background: #142330;
+    height: 12px;
+    margin: 0;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background-color: #466175;
+    border: 2px solid #142330;
+    border-radius: 5px;
+    min-height: 28px;
+    min-width: 28px;
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background-color: #55cdb7;
+}
+QScrollBar::add-line, QScrollBar::sub-line {
+    width: 0px;
+    height: 0px;
+    border: none;
+    background: transparent;
+}
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+
+QProgressBar {
+    background-color: #101c29;
+    color: #f1f9fb;
+    border: 1px solid #416073;
+    border-radius: 5px;
+    min-height: 16px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #39b6a1;
+    border-radius: 4px;
+}
+QSlider::groove:horizontal {
+    height: 5px;
+    background: #3b5669;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #55cdb7;
+    border: 1px solid #9eeedc;
+    border-radius: 8px;
+    width: 16px;
+    margin: -6px 0;
+}
+QSlider::handle:horizontal:hover { background: #94f3df; }
+QSlider::groove:vertical {
+    width: 5px;
+    background: #3b5669;
+    border-radius: 2px;
+}
+QSlider::handle:vertical {
+    background: #55cdb7;
+    border: 1px solid #9eeedc;
+    border-radius: 8px;
+    height: 16px;
+    margin: 0 -6px;
+}
+QTabWidget::pane { border: 1px solid #35495b; }
+QTabBar::tab {
+    background-color: #23384a;
+    padding: 7px 14px;
+    border: 1px solid #35495b;
+    border-bottom: none;
+}
+QTabBar::tab:selected {
+    background-color: #2b535c;
+    color: #e9fefa;
+    border-top: 2px solid #55cdb7;
+}
+QTabBar::tab:hover:!selected { background-color: #304b5f; }
+QToolTip {
+    background-color: #203446;
+    color: #edf8fb;
+    border: 1px solid #5e9b9e;
+    padding: 4px;
+}
+QCheckBox, QRadioButton { spacing: 7px; }
+/* Keep Fusion's native checked / unchecked glyphs for accessibility. */
