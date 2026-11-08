@@ -5,6 +5,7 @@ Every project has isolated stores and workers, retired safely on Close/Open.
 """
 
 import argparse
+import os
 import base64
 from functools import partial
 from pathlib import Path
@@ -829,6 +830,10 @@ def main():
         QTimer.singleShot(0, lambda: activate_project(Path(options.project).expanduser().resolve()))
     elif options.new_project:
         QTimer.singleShot(0, lambda: activate_project())
+    # Automated bundled-app smoke test: only exercised in CI, and only after
+    # the main window has been constructed and its event loop is running.
+    if os.environ.get("AUDIO_ANALYSIS_CI_SMOKE_TEST") == "1":
+        QTimer.singleShot(250, app.quit)
     return app.exec()
 
 

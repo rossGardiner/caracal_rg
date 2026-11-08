@@ -1,0 +1,94 @@
+name: Build desktop binaries
+
+on:
+  push:
+    branches:
+      - build-bins
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-2025
+            platform: windows-x64
+          - label: Ubuntu x64
+            runner: ubuntu-26.04
+            platform: linux-x64
+          - label: macOS Apple Silicon
+            runner: macos-26
+            platform: macos-arm64
+          - label: macOS Intel
+            runner: macos-26-intel
+            platform: macos-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libasound2t64 libpulse0 libxcb-cursor0
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Install CPU PyTorch (Windows/Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install PyTorch (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python -m pip install torch
+
+      # The Caracal data adapter is maintained in GitHub rather than PyPI.
+      # Install it explicitly on every platform before verifying imports.
+      - name: Install Caracal data adapter
+        shell: bash
+        run: python -m pip install "git+https://github.com/acmarkham/caracal-python.git"
+
+      - name: Verify runtime imports
+        shell: bash
+        run: |
+          python -c 'import PySide6.QtWidgets, PySide6.QtMultimedia, pyqtgraph, librosa, soundfile, onnxruntime, torch'
+          python -c 'from caracal import SyslogParser; print("Caracal parser available")'
+
+      - name: Freeze and smoke-test application
+        shell: bash
+        run: python scripts/build_binaries.py --platform '${{ matrix.platform }}'
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: AudioAnalysis-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
