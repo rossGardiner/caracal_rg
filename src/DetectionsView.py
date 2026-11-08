@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -27,8 +26,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
-    QSplitter,
     QTableView,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -38,7 +37,7 @@ class DetectionTableModel(QAbstractTableModel):
     """A fixed-size page of detections, not one widget per corpus chunk."""
 
     HEADERS = (
-        "Score", "Group", "Recording", "Recording ID", "Chunk", "Human label",
+        "Score", "Group", "Recording", "Recording ID", "Chunk", "Label",
         "Start (s)", "End (s)", "Duration (s)", "Device", "Captured (UTC)",
     )
     FIELDS = (
@@ -198,6 +197,7 @@ class DetectionsView(QWidget):
     clear_selection_requested = Signal()
     select_all_matching_requested = Signal()
     select_group_requested = Signal(int, bool)  # group ID, respect filters
+    label_selected_requested = Signal()
 
 
     def __init__(self, parent=None):
@@ -214,55 +214,90 @@ class DetectionsView(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        setup = QGridLayout()
-        setup.addWidget(QLabel("Classifier"), 0, 0)
+        # Keep the everyday workflow compact: select scan, filter, inspect rows.
+        header = QGridLayout()
+        header.addWidget(QLabel("Classifier"), 0, 0)
         self.classifier_combo = QComboBox()
         self.classifier_combo.setObjectName("detections_classifier")
-        setup.addWidget(self.classifier_combo, 0, 1)
-        setup.addWidget(QLabel("Saved scan"), 0, 2)
+        header.addWidget(self.classifier_combo, 0, 1)
+        header.addWidget(QLabel("Scan"), 1, 0)
         self.run_combo = QComboBox()
         self.run_combo.setObjectName("detections_run")
-        setup.addWidget(self.run_combo, 0, 3)
+        header.addWidget(self.run_combo, 1, 1)
+        self.generate_button = QPushButton("Scan…")
+        self.generate_button.setObjectName("detections_scan")
+        header.addWidget(self.generate_button, 1, 2)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.hide()
+        header.addWidget(self.cancel_button, 1, 3)
+        header.setColumnStretch(1, 1)
+        layout.addLayout(header)
 
-        setup.addWidget(QLabel("Scan ≥"), 1, 0)
+        # Keep the scan cutoff in its own dialogue; the filter does not rescan.
+        self.scan_dialog = QDialog(self)
+        self.scan_dialog.setWindowTitle("New scan")
+        scan_layout = QVBoxLayout(self.scan_dialog)
+        scan_cutoff = QHBoxLayout()
+        scan_cutoff.addWidget(QLabel("Minimum score"))
         self.scan_threshold = QDoubleSpinBox()
         self.scan_threshold.setRange(0.0, 1.0)
         self.scan_threshold.setDecimals(2)
         self.scan_threshold.setSingleStep(0.05)
         self.scan_threshold.setValue(0.5)
-        self.scan_threshold.setToolTip("Minimum model score to store in a new scan")
-        setup.addWidget(self.scan_threshold, 1, 1)
-        self.generate_button = QPushButton("Generate detections")
-        setup.addWidget(self.generate_button, 1, 2)
-        self.cancel_button = QPushButton("Cancel scan")
-        self.cancel_button.setEnabled(False)
-        setup.addWidget(self.cancel_button, 1, 3)
-        self.refresh_button = QPushButton("Refresh saved runs")
-        setup.addWidget(self.refresh_button, 1, 4)
+        self.scan_threshold.setToolTip("Only detections at or above this score are stored")
+        scan_cutoff.addWidget(self.scan_threshold)
+        scan_layout.addLayout(scan_cutoff)
+        scan_actions = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        scan_actions.button(QDialogButtonBox.StandardButton.Ok).setText("Start")
+        scan_actions.accepted.connect(self.scan_dialog.accept)
+        scan_actions.rejected.connect(self.scan_dialog.reject)
+        scan_layout.addWidget(scan_actions)
 
-        setup.addWidget(QLabel("Show score ≥"), 2, 0)
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("Score ≥"))
         self.min_score = QDoubleSpinBox()
         self.min_score.setRange(0.0, 1.0)
         self.min_score.setDecimals(3)
         self.min_score.setSingleStep(0.01)
-        setup.addWidget(self.min_score, 2, 1)
-        setup.addWidget(QLabel("Recording ID (exact)"), 2, 2)
+        filters.addWidget(self.min_score)
+        filters.addWidget(QLabel("Recording"))
         self.recording_filter = QLineEdit()
-        self.recording_filter.setPlaceholderText("Leave blank for all recordings")
-        setup.addWidget(self.recording_filter, 2, 3)
-        self.apply_button = QPushButton("Apply filters")
-        setup.addWidget(self.apply_button, 2, 4)
-        setup.setColumnStretch(1, 1)
-        setup.setColumnStretch(3, 2)
-        layout.addLayout(setup)
-
-        grouping_controls = QHBoxLayout()
-        self.grouping_checkbox = QCheckBox("Temporal grouping")
+        self.recording_filter.setPlaceholderText("Recording ID (exact)")
+        filters.addWidget(self.recording_filter, 1)
+        self.apply_button = QPushButton("Apply")
+        filters.addWidget(self.apply_button)
+        self.grouping_checkbox = QCheckBox("Group detections")
         self.grouping_checkbox.setObjectName("detections_grouping_enabled")
+        self.grouping_checkbox.setChecked(True)
         self.grouping_checkbox.setToolTip(
-            "Colour detections within each recording by time proximity. "
-            "Grouping uses the full saved scan, regardless of the table filters."
+            "Colour nearby detections in the same recording. "
+            "Every detection remains a separate row."
         )
+        filters.addWidget(self.grouping_checkbox)
+        layout.addLayout(filters)
+
+        # Details… occupies its own row (not the filter toolbar).
+        details_row = QHBoxLayout()
+        self.details_toggle = QToolButton()
+        self.details_toggle.setObjectName("detections_details_toggle")
+        self.details_toggle.setText("Details…")
+        self.details_toggle.setCheckable(True)
+        self.details_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        details_row.addWidget(self.details_toggle)
+        self.group_status = QLabel("")
+        self.group_status.setWordWrap(True)
+        details_row.addWidget(self.group_status, 1)
+        layout.addLayout(details_row)
+
+        self.details_panel = QWidget()
+        details_layout = QVBoxLayout(self.details_panel)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        options_row = QHBoxLayout()
+        options_row.addWidget(QLabel("Max group gap"))
         self.group_gap = QDoubleSpinBox()
         self.group_gap.setObjectName("detections_group_gap")
         self.group_gap.setRange(0.0, 86400.0)
@@ -270,17 +305,38 @@ class DetectionsView(QWidget):
         self.group_gap.setSingleStep(1.0)
         self.group_gap.setValue(10.0)
         self.group_gap.setSuffix(" s")
-        self.group_gap.setToolTip("Maximum time gap between consecutive detection intervals")
-        self.apply_grouping_button = QPushButton("Apply grouping")
-        self.apply_grouping_button.setObjectName("detections_apply_grouping")
-        self.group_status = QLabel("Grouping off")
-        self.group_status.setWordWrap(True)
-        grouping_controls.addWidget(self.grouping_checkbox)
-        grouping_controls.addWidget(QLabel("Max gap:"))
-        grouping_controls.addWidget(self.group_gap)
-        grouping_controls.addWidget(self.apply_grouping_button)
-        grouping_controls.addWidget(self.group_status, 1)
-        layout.addLayout(grouping_controls)
+        self.group_gap.setToolTip("Maximum gap between consecutive detection intervals")
+        options_row.addWidget(self.group_gap)
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setToolTip("Reload saved scans")
+        options_row.addWidget(self.refresh_button)
+        self.select_all_matching_button = QPushButton("Select all")
+        self.select_all_matching_button.setObjectName("detections_select_all_matching")
+        self.select_all_matching_button.setToolTip(
+            "Select every detection matching the applied filters, across all pages"
+        )
+        options_row.addWidget(self.select_all_matching_button)
+        self.prev_page_button = QPushButton("◀ Page")
+        self.next_page_button = QPushButton("Page ▶")
+        options_row.addWidget(self.prev_page_button)
+        options_row.addWidget(self.next_page_button)
+        self.columns_button = QToolButton()
+        self.columns_button.setText("Columns…")
+        self.columns_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.columns_menu = QMenu(self.columns_button)
+        self.columns_button.setMenu(self.columns_menu)
+        options_row.addWidget(self.columns_button)
+        options_row.addStretch(1)
+        details_layout.addLayout(options_row)
+        self.details = QPlainTextEdit()
+        self.details.setObjectName("detection_details")
+        self.details.setReadOnly(True)
+        self.details.setPlainText("Select a result to see its metadata.")
+        self.details.setMinimumHeight(90)
+        self.details.setMaximumHeight(190)
+        details_layout.addWidget(self.details)
+        self.details_panel.hide()
+        layout.addWidget(self.details_panel)
 
         self.status_label = QLabel("Select a classifier to browse saved detections.")
         self.status_label.setWordWrap(True)
@@ -288,38 +344,6 @@ class DetectionsView(QWidget):
         self.count_label = QLabel("0 detections")
         layout.addWidget(self.count_label)
 
-        selection_controls = QHBoxLayout()
-        self.selection_count_label = QLabel("0 selected")
-        self.selection_count_label.setObjectName("detections_selection_count")
-        self.select_all_matching_button = QPushButton("Select all matching")
-        self.select_all_matching_button.setObjectName("detections_select_all_matching")
-        self.select_all_matching_button.setToolTip(
-            "Select every result matching the applied filters, across all pages"
-        )
-        self.clear_selection_button = QPushButton("Clear selection")
-        self.clear_selection_button.setObjectName("detections_clear_selection")
-        self.clear_selection_button.setEnabled(False)
-        selection_controls.addWidget(self.selection_count_label)
-        selection_controls.addWidget(self.select_all_matching_button)
-        selection_controls.addWidget(self.clear_selection_button)
-        selection_controls.addStretch(1)
-        layout.addLayout(selection_controls)
-
-        export_controls = QHBoxLayout()
-        self.export_button = QPushButton("Export CSV…")
-        self.export_button.setObjectName("detections_export_csv")
-        self.export_button.setToolTip("Export all, filtered, or selected detections to CSV")
-        self.export_button.setEnabled(False)
-        self.cancel_export_button = QPushButton("Cancel export")
-        self.cancel_export_button.setEnabled(False)
-        self.export_status_label = QLabel("")
-        self.export_status_label.setWordWrap(True)
-        export_controls.addWidget(self.export_button)
-        export_controls.addWidget(self.cancel_export_button)
-        export_controls.addWidget(self.export_status_label, 1)
-        layout.addLayout(export_controls)
-
-        split = QSplitter(Qt.Orientation.Horizontal)
         self.table = DetectionTableView()
         self.table.setObjectName("detections_table")
         self.table_model = DetectionTableModel(self.table)
@@ -331,13 +355,14 @@ class DetectionsView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setSectionsClickable(True)
         self.table.horizontalHeader().setSortIndicatorShown(True)
         self.table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.DescendingOrder)
-        for column, width in enumerate((70, 72, 180, 140, 65, 100, 90, 90, 90, 130)):
+        for column, width in enumerate((70, 72, 180, 140, 65, 100, 90, 90, 90, 130, 160)):
             self.table.setColumnWidth(column, width)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.setToolTip(
             "Click a row to inspect it; use Up/Down to browse across pages, "
             "Enter to open in Explorer, or click any column heading to sort "
@@ -346,33 +371,61 @@ class DetectionsView(QWidget):
             "Right-click a selected row to label every selected detection; "
             "right-click an unselected row to label only that row."
         )
-        split.addWidget(self.table)
+        # The results table gets the whole width; metadata lives under Details….
+        for column in (1, 3, 4, 8, 9, 10):
+            self.table.hideColumn(column)
+        for column, label in enumerate(self.table_model.HEADERS):
+            action = self.columns_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(not self.table.isColumnHidden(column))
+            action.toggled.connect(
+                lambda checked, col=column: self.table.setColumnHidden(col, not checked)
+            )
+        layout.addWidget(self.table, 1)
 
-        inspector = QGroupBox("Selected detection")
-        inspector_layout = QVBoxLayout(inspector)
-        self.details = QPlainTextEdit()
-        self.details.setObjectName("detection_details")
-        self.details.setReadOnly(True)
-        self.details.setPlainText("Select a result to see its metadata.")
-        inspector_layout.addWidget(self.details)
-        self.open_button = QPushButton("Open in Explorer")
-        inspector_layout.addWidget(self.open_button)
-        split.addWidget(inspector)
-        split.setStretchFactor(0, 4)
-        split.setStretchFactor(1, 1)
-        layout.addWidget(split, 1)
+        selection_controls = QHBoxLayout()
+        self.selection_count_label = QLabel("0 selected")
+        self.selection_count_label.setObjectName("detections_selection_count")
+        self.label_button = QPushButton("Label…")
+        self.label_button.setObjectName("detections_label_selected")
+        self.label_button.setEnabled(False)
+        self.label_button.setToolTip("Label selected detections across all pages")
+        self.clear_selection_button = QPushButton("Clear")
+        self.clear_selection_button.setObjectName("detections_clear_selection")
+        self.clear_selection_button.setEnabled(False)
+        self.open_button = QPushButton("Open")
+        self.open_button.setToolTip("Open the current detection in Explorer")
+        self.export_button = QPushButton("Export…")
+        self.export_button.setObjectName("detections_export_csv")
+        self.export_button.setToolTip("Export all, filtered, or selected detections to CSV")
+        self.export_button.setEnabled(False)
+        self.cancel_export_button = QPushButton("Cancel export")
+        self.cancel_export_button.setEnabled(False)
+        self.cancel_export_button.hide()
+        selection_controls.addWidget(self.selection_count_label)
+        selection_controls.addWidget(self.label_button)
+        selection_controls.addWidget(self.clear_selection_button)
+        selection_controls.addStretch(1)
+        selection_controls.addWidget(self.open_button)
+        selection_controls.addWidget(self.export_button)
+        selection_controls.addWidget(self.cancel_export_button)
+        layout.addLayout(selection_controls)
+        self.export_status_label = QLabel("")
+        self.export_status_label.setWordWrap(True)
+        self.export_status_label.hide()
+        layout.addWidget(self.export_status_label)
 
         footer = QHBoxLayout()
-        self.prev_page_button = QPushButton("◀ Page")
-        self.next_page_button = QPushButton("Page ▶")
-        self.prev_button = QPushButton("◀ Previous detection")
-        self.next_button = QPushButton("Next detection ▶")
+        self.prev_button = QPushButton("◀")
+        self.prev_button.setToolTip("Previous detection")
+        self.next_button = QPushButton("▶")
+        self.next_button.setToolTip("Next detection")
         self.position_label = QLabel("0 / 0")
-        footer.addWidget(self.prev_page_button)
+        footer.addStretch(1)
         footer.addWidget(self.prev_button)
-        footer.addWidget(self.position_label, 1, Qt.AlignmentFlag.AlignCenter)
+        footer.addWidget(self.position_label)
         footer.addWidget(self.next_button)
-        footer.addWidget(self.next_page_button)
+        footer.addStretch(1)
         layout.addLayout(footer)
 
         self.classifier_combo.currentIndexChanged.connect(
@@ -381,9 +434,7 @@ class DetectionsView(QWidget):
         self.run_combo.currentIndexChanged.connect(
             lambda _: self.run_selected.emit(self.run_combo.currentData() or "")
         )
-        self.generate_button.clicked.connect(
-            lambda: self.generate_requested.emit(self.scan_threshold.value())
-        )
+        self.generate_button.clicked.connect(self._show_scan_dialog)
         self.refresh_button.clicked.connect(self.refresh_requested)
         self.cancel_button.clicked.connect(self.cancel_requested)
         self.export_button.clicked.connect(self.export_requested)
@@ -395,13 +446,15 @@ class DetectionsView(QWidget):
         )
         self.table.selectionModel().selectionChanged.connect(self._emit_page_selection)
         self.select_all_matching_button.clicked.connect(self.select_all_matching_requested)
+        self.label_button.clicked.connect(self.label_selected_requested)
         self.clear_selection_button.clicked.connect(self.clear_selection_requested)
         self.table.doubleClicked.connect(lambda _: self.open_requested.emit())
         self.table.open_at_selection.connect(self.open_requested)
         self.table.previous_at_boundary.connect(self.previous_requested)
         self.table.next_at_boundary.connect(self.next_requested)
         self.table.horizontalHeader().sectionClicked.connect(self._sort_column)
-        self.apply_grouping_button.clicked.connect(self._apply_grouping)
+        self.group_gap.editingFinished.connect(self._apply_grouping)
+        self.details_toggle.toggled.connect(self._toggle_details)
         self.grouping_checkbox.toggled.connect(self._grouping_toggled)
         self.prev_button.clicked.connect(self.previous_requested)
         self.next_button.clicked.connect(self.next_requested)
@@ -414,24 +467,66 @@ class DetectionsView(QWidget):
         self.set_grouping_available(False)
         self.set_selection_state(0, available=False)
 
+    def _show_scan_dialog(self):
+        if self.scan_dialog.exec() == QDialog.DialogCode.Accepted:
+            self.generate_requested.emit(self.scan_threshold.value())
+
+    def _toggle_details(self, expanded):
+        self.details_panel.setVisible(expanded)
+        self.details_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+
     def _grouping_toggled(self, enabled):
         self.group_gap.setEnabled(enabled and self.grouping_checkbox.isEnabled())
         self._apply_grouping()
 
     def _apply_grouping(self):
-        self.grouping_requested.emit(self.grouping_checkbox.isChecked(), self.group_gap.value())
+        if self.grouping_checkbox.isEnabled():
+            self.grouping_requested.emit(self.grouping_checkbox.isChecked(), self.group_gap.value())
 
     def set_grouping_available(self, available):
         self.grouping_checkbox.setEnabled(available)
         self.group_gap.setEnabled(available and self.grouping_checkbox.isChecked())
-        self.apply_grouping_button.setEnabled(available)
 
     def set_grouping_state(self, enabled, *, message="Grouping off", busy=False):
         with QSignalBlocker(self.grouping_checkbox):
             self.grouping_checkbox.setChecked(bool(enabled))
         self.group_gap.setEnabled(self.grouping_checkbox.isEnabled() and enabled and not busy)
-        self.apply_grouping_button.setEnabled(self.grouping_checkbox.isEnabled() and not busy)
         self.group_status.setText(message)
+
+    def show_selection_label_menu(self, run, refs, targets):
+        """Visible bulk labelling, independent of the inspected table row."""
+        menu = QMenu(self.label_button)
+        menu.addSection(f"Label {len(refs):,} selected detections")
+
+        def add_actions(parent, classifier_id):
+            for text, label in (
+                ("Positive", BinaryLabel.POSITIVE),
+                ("Negative", BinaryLabel.NEGATIVE),
+                ("Remove label", None),
+            ):
+                action = parent.addAction(text)
+                action.triggered.connect(
+                    lambda _checked=False, cid=classifier_id, choice=label:
+                        self.human_labels_requested.emit(
+                            refs, run.run_id, run.embedding_space, cid, choice
+                        )
+                )
+
+        default = next((item for item in targets if item[0] == run.classifier_id), None)
+        if default is not None:
+            menu.addSection(default[1])
+            add_actions(menu, default[0])
+        others = [item for item in targets if item[0] != run.classifier_id]
+        if others:
+            submenu = menu.addMenu("Other classifiers…") if default else menu
+            for classifier_id, name in others:
+                add_actions(submenu.addMenu(name), classifier_id)
+        if not targets:
+            action = menu.addAction("No compatible classifiers")
+            action.setEnabled(False)
+        menu.exec(self.label_button.mapToGlobal(self.label_button.rect().bottomLeft()))
 
     def _context_menu_at(self, position):
         """Ask the controller which classifiers are compatible with this row."""
@@ -461,6 +556,7 @@ class DetectionsView(QWidget):
             f"{count:,} selected" + (" · selecting…" if busy else "")
         )
         self.clear_selection_button.setEnabled(count > 0 or busy)
+        self.label_button.setEnabled(available and count > 0 and not busy)
         self.select_all_matching_button.setEnabled(available and not busy)
 
     def set_context_group(self, group):
@@ -718,7 +814,7 @@ class DetectionsView(QWidget):
     def show_status(self, message):
         self.status_label.setText(message)
 
-    def choose_csv_export(self, run, matching_count, selected_count=0):
+    def choose_csv_export(self, run, matching_count, selected_count=0, *, filters_active=False):
         """Ask for export scope and destination on the Qt main thread."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Export detections to CSV")
@@ -736,7 +832,12 @@ class DetectionsView(QWidget):
             f"Selected detections ({selected_count:,}, across all pages)"
         )
         selected_radio.setEnabled(selected_count > 0)
-        all_radio.setChecked(True)
+        if selected_count > 0:
+            selected_radio.setChecked(True)
+        elif filters_active:
+            filtered_radio.setChecked(True)
+        else:
+            all_radio.setChecked(True)
         contents.addWidget(all_radio)
         contents.addWidget(filtered_radio)
         contents.addWidget(selected_radio)
@@ -764,6 +865,8 @@ class DetectionsView(QWidget):
     def set_export_state(self, *, available, running, cancelling=False):
         self.export_button.setEnabled(bool(available and not running))
         self.cancel_export_button.setEnabled(bool(running and not cancelling))
+        self.cancel_export_button.setVisible(bool(running))
 
     def show_export_status(self, message):
         self.export_status_label.setText(message)
+        self.export_status_label.setVisible(bool(message))

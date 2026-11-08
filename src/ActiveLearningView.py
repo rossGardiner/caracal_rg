@@ -5,7 +5,6 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -13,6 +12,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -54,8 +54,8 @@ class ActiveLearningView(QWidget):
             self._emit_classifier_selection
         )
         self.new_classifier_button = QPushButton("New")
-        self.delete_classifier_button = QPushButton("Delete")
-        self.configure_classifier_button = QPushButton("Configure…")
+        self.delete_classifier_button = QPushButton("Delete classifier…")
+        self.configure_classifier_button = QPushButton("Settings…")
         self.configure_classifier_button.setToolTip("Edit model training and review settings")
         self.configure_classifier_button.clicked.connect(
             self.configure_classifier_requested.emit
@@ -71,29 +71,22 @@ class ActiveLearningView(QWidget):
         classifier_controls.addWidget(self.classifier_selector, 1)
         classifier_controls.addWidget(self.configure_classifier_button)
         classifier_controls.addWidget(self.new_classifier_button)
-        classifier_controls.addWidget(self.delete_classifier_button)
 
         self.bound_pipeline_value = QLabel("—")
         self.bound_space_value = QLabel("—")
         self.bound_space_value.setWordWrap(True)
 
-        classifier_group = QGroupBox("Classifier")
-        classifier_layout = QVBoxLayout(classifier_group)
-        classifier_layout.addLayout(classifier_controls)
-        classifier_form = QFormLayout()
-        classifier_form.addRow("Bound pipeline:", self.bound_pipeline_value)
-        classifier_form.addRow("Bound embedding space:", self.bound_space_value)
-        classifier_layout.addLayout(classifier_form)
+        # Keep the name and controls visible; move implementation details and
+        # destructive actions into an opt-in technical panel below.
         self.configuration_summary = QLabel("—")
         self.configuration_summary.setWordWrap(True)
-        classifier_layout.addWidget(self.configuration_summary)
 
         self.pipeline_selector = QComboBox()
         self.pipeline_selector.currentIndexChanged.connect(
             self._emit_pipeline_selection
         )
 
-        self.prepare_button = QPushButton("Use pipeline for active learning")
+        self.prepare_button = QPushButton("Prepare pipeline")
         self.prepare_button.setToolTip(
             "Build the selected pipeline, verify the classifier's exact "
             "embedding-space identity, and prepare a disk-backed corpus"
@@ -104,10 +97,6 @@ class ActiveLearningView(QWidget):
         pipeline_controls.addWidget(self.pipeline_selector, 1)
         pipeline_controls.addWidget(self.prepare_button)
 
-        pipeline_group = QGroupBox("Training pipeline")
-        pipeline_layout = QVBoxLayout(pipeline_group)
-        pipeline_layout.addLayout(pipeline_controls)
-
         self.status_value = QLabel()
         self.pipeline_hash_value = QLabel()
         self.pipeline_hash_value.setWordWrap(True)
@@ -116,14 +105,6 @@ class ActiveLearningView(QWidget):
         self.cache_root_value.setWordWrap(True)
         self.corpus_value = QLabel()
         self.corpus_value.setWordWrap(True)
-
-        space_group = QGroupBox("Prepared embedding space")
-        space_layout = QFormLayout(space_group)
-        space_layout.addRow("Status:", self.status_value)
-        space_layout.addRow("Compatibility hash:", self.pipeline_hash_value)
-        space_layout.addRow("Embedding:", self.embedding_name_value)
-        space_layout.addRow("Cache:", self.cache_root_value)
-        space_layout.addRow("Corpus:", self.corpus_value)
 
         self.explorer_space_value = QLabel()
         self.explorer_space_value.setWordWrap(True)
@@ -143,32 +124,15 @@ class ActiveLearningView(QWidget):
         label_buttons.addWidget(self.remove_label_button)
         label_buttons.addStretch(1)
 
-        explorer_group = QGroupBox("Current Explorer chunk")
-        explorer_layout = QVBoxLayout(explorer_group)
-        explorer_form = QFormLayout()
-        explorer_form.addRow("Compatibility:", self.explorer_space_value)
-        explorer_form.addRow("Chunk:", self.explorer_ref_value)
-        explorer_form.addRow("Human label:", self.explorer_label_value)
-        explorer_layout.addLayout(explorer_form)
-        explorer_layout.addLayout(label_buttons)
-
         self.positive_count_value = QLabel("0")
         self.negative_count_value = QLabel("0")
-        self.run_round_button = QPushButton("Run learning round")
+        self.run_round_button = QPushButton("Train")
         self.run_round_button.clicked.connect(self.run_round_requested.emit)
         self.round_status_value = QLabel()
         self.round_status_value.setWordWrap(True)
         self.round_progress_bar = QProgressBar()
         self.round_progress_bar.setTextVisible(True)
         self.round_progress_bar.setVisible(False)
-
-        learner_group = QGroupBox("Binary classifier")
-        learner_layout = QFormLayout(learner_group)
-        learner_layout.addRow("Positive labels:", self.positive_count_value)
-        learner_layout.addRow("Negative labels:", self.negative_count_value)
-        learner_layout.addRow("Round:", self.round_status_value)
-        learner_layout.addRow("Progress:", self.round_progress_bar)
-        learner_layout.addRow(self.run_round_button)
 
         self.candidate_position_value = QLabel("—")
         self.candidate_ref_value = QLabel("—")
@@ -183,7 +147,7 @@ class ActiveLearningView(QWidget):
         self.previous_candidate_button = QPushButton("Previous")
         self.next_candidate_button = QPushButton("Next")
         self.open_candidate_button = QPushButton("Open in Explorer")
-        self.quick_review_button = QPushButton("Quick Review…")
+        self.quick_review_button = QPushButton("Review")
         self.quick_review_button.setToolTip(
             "Review spectrograms, play audio and label via P / N / S / Space"
         )
@@ -238,7 +202,6 @@ class ActiveLearningView(QWidget):
         candidate_navigation.addWidget(self.previous_candidate_button)
         candidate_navigation.addWidget(self.next_candidate_button)
         candidate_navigation.addWidget(self.open_candidate_button)
-        candidate_navigation.addWidget(self.quick_review_button)
         candidate_navigation.addStretch(1)
 
         candidate_buttons = QHBoxLayout()
@@ -282,9 +245,84 @@ class ActiveLearningView(QWidget):
             self.next_candidate_requested.emit
         )
 
-        candidate_group = QGroupBox("Review candidate")
-        candidate_layout = QVBoxLayout(candidate_group)
+        # 1. Setup: everyday actions first, technical identity and deletion
+        # available on demand.  Retain existing widgets and signal connections
+        # so the controller does not need to change.
+        setup_group = QGroupBox("1. Choose classifier and pipeline")
+        setup_layout = QVBoxLayout(setup_group)
+        setup_layout.addWidget(QLabel("Classifier"))
+        setup_layout.addLayout(classifier_controls)
+        setup_layout.addWidget(QLabel("Training pipeline"))
+        setup_layout.addLayout(pipeline_controls)
+        setup_status = QHBoxLayout()
+        setup_status.addWidget(QLabel("Status:"))
+        setup_status.addWidget(self.status_value, 1)
+        setup_layout.addLayout(setup_status)
 
+        technical_content = QWidget()
+        technical_layout = QVBoxLayout(technical_content)
+        technical_layout.setContentsMargins(0, 0, 0, 0)
+        classifier_form = QFormLayout()
+        classifier_form.addRow("Bound pipeline:", self.bound_pipeline_value)
+        classifier_form.addRow("Bound embedding space:", self.bound_space_value)
+        classifier_form.addRow("Training settings:", self.configuration_summary)
+        classifier_form.addRow("Compatibility hash:", self.pipeline_hash_value)
+        classifier_form.addRow("Embedding:", self.embedding_name_value)
+        classifier_form.addRow("Cache:", self.cache_root_value)
+        classifier_form.addRow("Corpus:", self.corpus_value)
+        technical_layout.addLayout(classifier_form)
+        delete_row = QHBoxLayout()
+        delete_row.addWidget(self.delete_classifier_button)
+        delete_row.addStretch(1)
+        technical_layout.addLayout(delete_row)
+        self.technical_details_toggle = self._make_disclosure(
+            "Details…", technical_content
+        )
+        setup_layout.addWidget(self.technical_details_toggle)
+        setup_layout.addWidget(technical_content)
+
+        # 2. Training: manual labels belong beside the Explorer selection and
+        # training progress. Do not hide Positive/Negative: these are the seed
+        # labels users need before their first round.
+        training_group = QGroupBox("2. Label examples and train")
+        training_layout = QVBoxLayout(training_group)
+        training_hint = QLabel(
+            "Select a recording chunk in Explorer, label a positive example, "
+            "then train the classifier."
+        )
+        training_hint.setWordWrap(True)
+        training_layout.addWidget(training_hint)
+        explorer_form = QFormLayout()
+        explorer_form.addRow("Explorer:", self.explorer_space_value)
+        explorer_form.addRow("Chunk:", self.explorer_ref_value)
+        explorer_form.addRow("Human label:", self.explorer_label_value)
+        training_layout.addLayout(explorer_form)
+        training_layout.addLayout(label_buttons)
+        counts_row = QHBoxLayout()
+        counts_row.addWidget(QLabel("Positive labels:"))
+        counts_row.addWidget(self.positive_count_value)
+        counts_row.addSpacing(16)
+        counts_row.addWidget(QLabel("Negative labels:"))
+        counts_row.addWidget(self.negative_count_value)
+        counts_row.addStretch(1)
+        training_layout.addLayout(counts_row)
+        training_layout.addWidget(self.run_round_button)
+        training_layout.addWidget(self.round_status_value)
+        training_layout.addWidget(self.round_progress_bar)
+
+        # 3. Review: the audio/spectrogram Quick Review window is the default
+        # path. Preserve the table-free manual controls for power users, but
+        # collapse them to avoid presenting two competing labelling workflows.
+        review_group = QGroupBox("3. Review")
+        review_layout = QVBoxLayout(review_group)
+        self.review_summary_value = QLabel("Train to find examples to review.")
+        self.review_summary_value.setWordWrap(True)
+        review_layout.addWidget(self.review_summary_value)
+        review_layout.addWidget(self.quick_review_button)
+
+        manual_content = QWidget()
+        manual_layout = QVBoxLayout(manual_content)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
         candidate_summary = QHBoxLayout()
         candidate_form = QFormLayout()
         candidate_form.addRow("Queue:", self.candidate_position_value)
@@ -300,29 +338,66 @@ class ActiveLearningView(QWidget):
         round_form.addRow("Skipped:", self.round_skipped_value)
         round_form.addRow("Unreviewed:", self.round_unreviewed_value)
         candidate_summary.addLayout(round_form, 1)
-
-        candidate_layout.addLayout(candidate_summary)
-        candidate_layout.addLayout(candidate_navigation)
-        candidate_layout.addLayout(candidate_buttons)
+        manual_layout.addLayout(candidate_summary)
+        manual_layout.addLayout(candidate_navigation)
+        manual_layout.addLayout(candidate_buttons)
+        self.manual_review_toggle = self._make_disclosure(
+            "Manual candidate controls", manual_content
+        )
+        self.manual_review_toggle.toggled.connect(self._update_manual_shortcuts)
+        review_layout.addWidget(self.manual_review_toggle)
+        review_layout.addWidget(manual_content)
 
         self.error_value = QLabel()
         self.error_value.setWordWrap(True)
 
-        # Keep configuration/status compact at the top and reserve the widest
-        # area for the two interactive parts of the workflow.  This avoids
-        # pushing the review controls below the bottom of a normal-height
-        # application window.
-        layout = QGridLayout(self)
-        layout.addWidget(classifier_group, 0, 0)
-        layout.addWidget(pipeline_group, 0, 1)
-        layout.addWidget(space_group, 1, 0)
-        layout.addWidget(learner_group, 1, 1)
-        layout.addWidget(explorer_group, 2, 0)
-        layout.addWidget(candidate_group, 2, 1)
-        layout.addWidget(self.error_value, 3, 0, 1, 2)
-        layout.setColumnStretch(0, 1)
-        layout.setColumnStretch(1, 2)
-        layout.setRowStretch(2, 1)
+        # One-column layout stays readable when the workspace is docked next
+        # to Explorer. MainWindow already supplies a scroll area for small
+        # docks; collapsed controls keep the common workflow compact.
+        layout = QVBoxLayout(self)
+        layout.addWidget(setup_group)
+        layout.addWidget(training_group)
+        layout.addWidget(review_group)
+        layout.addWidget(self.error_value)
+        layout.addStretch(1)
+
+        # Hidden manual actions should not accept P/N/S/arrow shortcuts while
+        # focus is on a classifier/pipeline selector elsewhere in this view.
+        self._manual_shortcut_states = (False, False, False)
+        self._update_manual_shortcuts()
+
+    @staticmethod
+    def _make_disclosure(title: str, content: QWidget) -> QToolButton:
+        """Return an accessible, collapsed toggle for secondary controls."""
+        toggle = QToolButton()
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toggle.setArrowType(Qt.ArrowType.RightArrow)
+        toggle.setAccessibleName(title)
+        content.setVisible(False)
+
+        def show_content(expanded: bool):
+            toggle.setArrowType(
+                Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+            )
+            content.setVisible(expanded)
+
+        toggle.toggled.connect(show_content)
+        return toggle
+
+    def _update_manual_shortcuts(self, _expanded: bool = False):
+        """Keep hidden manual-label shortcuts from changing labels by accident."""
+        manual = self.manual_review_toggle.isChecked()
+        can_label, can_previous, can_next = self._manual_shortcut_states
+        for shortcut in (
+            self.candidate_positive_shortcut,
+            self.candidate_negative_shortcut,
+            self.candidate_skip_shortcut,
+        ):
+            shortcut.setEnabled(manual and can_label)
+        self.candidate_previous_shortcut.setEnabled(manual and can_previous)
+        self.candidate_next_shortcut.setEnabled(manual and can_next)
 
     def prompt_new_classifier_name(self, existing_names):
         existing = set(existing_names)
@@ -394,6 +469,10 @@ class ActiveLearningView(QWidget):
         for name in names:
             self.pipeline_selector.addItem(name, name)
 
+        if selected_name is not None and selected_name not in names:
+            # Show the saved binding even when its pipeline was removed.
+            self.pipeline_selector.addItem(f"{selected_name} (unavailable)", selected_name)
+
         if selected_name is None:
             self.pipeline_selector.setCurrentIndex(0)
         else:
@@ -464,14 +543,29 @@ class ActiveLearningView(QWidget):
         self.new_classifier_button.setEnabled(not busy)
         self.delete_classifier_button.setEnabled(has_classifier and not busy)
         self.configure_classifier_button.setEnabled(has_classifier and not busy)
-        self.pipeline_selector.setEnabled(has_classifier and not busy)
+        self.pipeline_selector.setEnabled(
+            has_classifier and not busy and not model.pipeline_locked
+        )
+        if model.pipeline_locked:
+            if model.selected_pipeline_name in model.available_pipelines:
+                self.pipeline_selector.setToolTip(
+                    "This classifier is bound to this pipeline. "
+                    "Create a new classifier to use another pipeline."
+                )
+            else:
+                self.pipeline_selector.setToolTip(
+                    "The saved pipeline is unavailable. Restore the original "
+                    "pipeline to prepare this classifier."
+                )
+        else:
+            self.pipeline_selector.setToolTip("Select a training pipeline")
         self.prepare_button.setEnabled(
             has_classifier
             and not busy
-            and model.selected_pipeline_name is not None
+            and model.selected_pipeline_name in model.available_pipelines
         )
         self.prepare_button.setText(
-            "Preparing…" if preparing else "Use pipeline for active learning"
+            "Preparing…" if preparing else "Prepare pipeline"
         )
 
         can_label = model.can_label_explorer_ref
@@ -487,7 +581,8 @@ class ActiveLearningView(QWidget):
             and not model.round_running
         )
         self.run_round_button.setText(
-            "Training and scoring…" if model.round_running else "Run learning round"
+            "Training…" if model.round_running
+            else "Train"
         )
 
         has_candidate = model.current_candidate is not None and not model.round_running
@@ -507,16 +602,27 @@ class ActiveLearningView(QWidget):
             has_candidate and model.current_candidate_label is not None
         )
         self.skip_candidate_button.setEnabled(has_candidate)
-        self.candidate_positive_shortcut.setEnabled(has_candidate)
-        self.candidate_negative_shortcut.setEnabled(has_candidate)
-        self.candidate_skip_shortcut.setEnabled(has_candidate)
-        self.candidate_previous_shortcut.setEnabled(
-            not model.round_running and model.can_go_previous_candidate
+        self._manual_shortcut_states = (
+            has_candidate,
+            not model.round_running and model.can_go_previous_candidate,
+            not model.round_running and model.can_go_next_candidate,
         )
-        self.candidate_next_shortcut.setEnabled(
-            not model.round_running and model.can_go_next_candidate
-        )
+        self._update_manual_shortcuts()
 
+        if model.round_running:
+            self.review_summary_value.setText("Finding suggestions…")
+        elif model.review_queue:
+            self.review_summary_value.setText(
+                f"{len(model.review_queue)} suggested examples · "
+                f"{model.review_unreviewed_count} unreviewed · "
+                f"{model.review_positive_count} positive · "
+                f"{model.review_negative_count} negative · "
+                f"{model.review_skipped_count} skipped"
+            )
+        else:
+            self.review_summary_value.setText(
+                "No suggestions yet. Train the classifier to generate a review queue."
+            )
         messages = [message for message in (model.error, model.round_error) if message]
         self.error_value.setText("\n".join(messages))
 

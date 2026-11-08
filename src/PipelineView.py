@@ -1,7 +1,5 @@
 """Presentation for pipeline editing, execution, and benchmarking."""
 
-from html import escape
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -16,9 +14,11 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -52,185 +52,203 @@ class PipelineView(QWidget):
 
         self._selected_stage_index = None
         self._rendered_pipeline_name = None
+        self._rendered_stages = None
+        self._stages_editable = False
+        self._stage_count = 0
 
+        # The common workflow is selecting a pipeline and using it in Explorer.
+        # Editing definitions and benchmarking are secondary, opt-in activities.
         self.pipeline_selector = QComboBox()
         self.pipeline_selector.currentTextChanged.connect(
             self.pipeline_selected.emit
         )
-
-        self.new_pipeline_button = QPushButton("New")
-        self.duplicate_pipeline_button = QPushButton("Duplicate")
-        self.save_pipeline_button = QPushButton("Save")
-        self.delete_pipeline_button = QPushButton("Delete")
         self.use_in_explorer_button = QPushButton("Use in Explorer")
-        self.new_pipeline_button.setToolTip(
-            "Create an editable pipeline from the application default"
-        )
-        self.duplicate_pipeline_button.setToolTip(
-            "Copy the currently selected pipeline"
-        )
-        self.save_pipeline_button.setToolTip(
-            "Save the selected user pipeline"
-        )
-        self.delete_pipeline_button.setToolTip(
-            "Delete the selected user pipeline"
-        )
         self.use_in_explorer_button.setToolTip(
-            "Make the selected pipeline the Explorer's active pipeline"
-        )
-        self.new_pipeline_button.clicked.connect(
-            self.new_pipeline_requested.emit
-        )
-        self.duplicate_pipeline_button.clicked.connect(
-            self.duplicate_pipeline_requested.emit
-        )
-        self.save_pipeline_button.clicked.connect(
-            self.save_pipeline_requested.emit
-        )
-        self.delete_pipeline_button.clicked.connect(
-            self.delete_pipeline_requested.emit
+            "Activate the selected pipeline in Explorer"
         )
         self.use_in_explorer_button.clicked.connect(
             self.use_in_explorer_requested.emit
         )
-
-        pipeline_actions = QHBoxLayout()
-        pipeline_actions.addWidget(self.new_pipeline_button)
-        pipeline_actions.addWidget(self.duplicate_pipeline_button)
-        pipeline_actions.addWidget(self.save_pipeline_button)
-        pipeline_actions.addWidget(self.delete_pipeline_button)
-        pipeline_actions.addWidget(self.use_in_explorer_button)
-        pipeline_actions.addStretch(1)
-
-        self.start_button = QPushButton("Start")
-        self.pause_button = QPushButton("Pause")
-        self.stop_button = QPushButton("Stop")
-
-        self.start_button.clicked.connect(
-            self.start_requested.emit
+        self.new_pipeline_button = QPushButton("New")
+        self.new_pipeline_button.setToolTip("Create an editable pipeline")
+        self.new_pipeline_button.clicked.connect(
+            self.new_pipeline_requested.emit
         )
-        self.pause_button.clicked.connect(
-            self._on_pause_resume_clicked
+        self.save_pipeline_button = QPushButton("Save")
+        self.save_pipeline_button.setToolTip("Save changes to this pipeline")
+        self.save_pipeline_button.clicked.connect(
+            self.save_pipeline_requested.emit
         )
-        self.stop_button.clicked.connect(
-            self.stop_requested.emit
+        self.duplicate_pipeline_button = QPushButton("Duplicate")
+        self.duplicate_pipeline_button.setToolTip(
+            "Create an editable copy of the selected pipeline"
+        )
+        self.duplicate_pipeline_button.clicked.connect(
+            self.duplicate_pipeline_requested.emit
+        )
+        self.delete_pipeline_button = QPushButton("Delete…")
+        self.delete_pipeline_button.setToolTip(
+            "Delete the selected user pipeline (asks for confirmation)"
+        )
+        self.delete_pipeline_button.clicked.connect(
+            self.delete_pipeline_requested.emit
         )
 
-        controls = QHBoxLayout()
-        controls.addWidget(self.start_button)
-        controls.addWidget(self.pause_button)
-        controls.addWidget(self.stop_button)
-        controls.addStretch(1)
-
-        self.status_value = QLabel()
         self.definition_state_value = QLabel()
         self.active_pipeline_value = QLabel()
         self.active_pipeline_value.setWordWrap(True)
         self.description_value = QLabel()
         self.description_value.setWordWrap(True)
+        self.pipeline_hash_value = QLabel()
+        self.pipeline_hash_value.setWordWrap(True)
+        self.active_pipeline_details_value = QLabel()
+        self.active_pipeline_details_value.setWordWrap(True)
 
-        self.stages_value = QLabel()
-        self.stages_value.setWordWrap(True)
-        self.stages_value.setTextFormat(Qt.RichText)
-        self.stages_value.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        self.stages_value.setOpenExternalLinks(False)
-        self.stages_value.linkActivated.connect(
-            self._on_stage_link_activated
+        # Single click SELECTS a stage; double click or Edit opens its editor.
+        # This avoids the old hyperlink behaviour that opened the editor when
+        # the user merely wanted to select a stage to move or remove it.
+        self.stages_list = QListWidget()
+        self.stages_list.setToolTip(
+            "Select a stage. Double-click to edit; use arrows to reorder."
         )
+        self.stages_list.setMinimumHeight(115)
+        self.stages_list.setMaximumHeight(220)
+        self.stages_list.currentRowChanged.connect(self._on_stage_selected)
+        self.stages_list.itemDoubleClicked.connect(self._on_stage_double_clicked)
 
-        self.add_stage_button = QPushButton("Add stage")
+        self.add_stage_button = QPushButton("Add")
+        self.edit_stage_button = QPushButton("Edit")
         self.remove_stage_button = QPushButton("Remove")
-        self.move_stage_up_button = QPushButton("Move up")
-        self.move_stage_down_button = QPushButton("Move down")
-
+        self.move_stage_up_button = QPushButton("↑")
+        self.move_stage_down_button = QPushButton("↓")
+        self.add_stage_button.setToolTip("Add a stage after the selection")
+        self.edit_stage_button.setToolTip("Edit the selected stage")
+        self.remove_stage_button.setToolTip("Remove the selected stage")
+        self.move_stage_up_button.setToolTip("Move the selected stage up")
+        self.move_stage_down_button.setToolTip("Move the selected stage down")
         self.add_stage_button.clicked.connect(self._emit_add_stage)
+        self.edit_stage_button.clicked.connect(self._emit_edit_stage)
         self.remove_stage_button.clicked.connect(self._emit_remove_stage)
         self.move_stage_up_button.clicked.connect(self._emit_move_stage_up)
         self.move_stage_down_button.clicked.connect(self._emit_move_stage_down)
 
         stage_controls = QHBoxLayout()
         stage_controls.addWidget(self.add_stage_button)
+        stage_controls.addWidget(self.edit_stage_button)
         stage_controls.addWidget(self.remove_stage_button)
         stage_controls.addWidget(self.move_stage_up_button)
         stage_controls.addWidget(self.move_stage_down_button)
         stage_controls.addStretch(1)
 
-        self.pipeline_hash_value = QLabel()
-        self.pipeline_hash_value.setWordWrap(True)
+        definition_content = QWidget()
+        definition_layout = QVBoxLayout(definition_content)
+        definition_layout.setContentsMargins(0, 0, 0, 0)
+        details_form = QFormLayout()
+        details_form.addRow("Description:", self.description_value)
+        details_form.addRow("Hash:", self.pipeline_hash_value)
+        details_form.addRow("Explorer:", self.active_pipeline_details_value)
+        definition_layout.addLayout(details_form)
+        definition_layout.addWidget(QLabel("Stages (top to bottom):"))
+        definition_layout.addWidget(self.stages_list)
+        definition_layout.addLayout(stage_controls)
+        management = QHBoxLayout()
+        management.addWidget(self.duplicate_pipeline_button)
+        management.addWidget(self.delete_pipeline_button)
+        management.addStretch(1)
+        definition_layout.addLayout(management)
+        self.details_toggle = self._make_disclosure("Details…", definition_content)
 
-        definition_group = QGroupBox("Pipeline definition")
-        definition_layout = QFormLayout(definition_group)
-        definition_layout.addRow(
-            "Description:",
-            self.description_value,
+        # Benchmarking is distinct from using a pipeline in Explorer. Its
+        # controls and metrics stay out of the way until explicitly expanded.
+        self.start_button = QPushButton("Run")
+        self.start_button.setToolTip(
+            "Benchmark the selected pipeline (does not activate it in Explorer)"
         )
-        definition_layout.addRow(
-            "Stages:",
-            self.stages_value,
-        )
-        definition_layout.addRow("", stage_controls)
-        definition_layout.addRow(
-            "Pipeline hash:",
-            self.pipeline_hash_value,
-        )
+        self.pause_button = QPushButton("Pause")
+        self.stop_button = QPushButton("Stop")
+        self.start_button.clicked.connect(self.start_requested.emit)
+        self.pause_button.clicked.connect(self._on_pause_resume_clicked)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        self.pause_button.setVisible(False)
+        self.stop_button.setVisible(False)
 
+        benchmark_controls = QHBoxLayout()
+        benchmark_controls.addWidget(self.start_button)
+        benchmark_controls.addWidget(self.pause_button)
+        benchmark_controls.addWidget(self.stop_button)
+        benchmark_controls.addStretch(1)
+
+        self.status_value = QLabel()
         self.chunks_value = QLabel()
         self.audio_seconds_value = QLabel()
         self.elapsed_value = QLabel()
         self.chunk_rate_value = QLabel()
         self.realtime_factor_value = QLabel()
+        benchmark_content = QWidget()
+        benchmark_layout = QVBoxLayout(benchmark_content)
+        benchmark_layout.setContentsMargins(0, 0, 0, 0)
+        benchmark_layout.addLayout(benchmark_controls)
+        benchmark_form = QFormLayout()
+        benchmark_form.addRow("Chunks:", self.chunks_value)
+        benchmark_form.addRow("Audio:", self.audio_seconds_value)
+        benchmark_form.addRow("Elapsed:", self.elapsed_value)
+        benchmark_form.addRow("Throughput:", self.chunk_rate_value)
+        benchmark_form.addRow("Realtime factor:", self.realtime_factor_value)
+        benchmark_layout.addLayout(benchmark_form)
+        self.benchmark_toggle = self._make_disclosure("Benchmark", benchmark_content)
+
+        pipeline_group = QGroupBox("Pipeline")
+        pipeline_layout = QVBoxLayout(pipeline_group)
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(self.pipeline_selector, 1)
+        selector_row.addWidget(self.use_in_explorer_button)
+        pipeline_layout.addLayout(selector_row)
+        actions_row = QHBoxLayout()
+        actions_row.addWidget(self.new_pipeline_button)
+        actions_row.addWidget(self.save_pipeline_button)
+        actions_row.addStretch(1)
+        pipeline_layout.addLayout(actions_row)
+        pipeline_layout.addWidget(self.definition_state_value)
+        pipeline_layout.addWidget(self.active_pipeline_value)
+        pipeline_layout.addWidget(self.details_toggle)
+        pipeline_layout.addWidget(definition_content)
+
+        benchmark_group = QGroupBox("Performance")
+        performance_layout = QVBoxLayout(benchmark_group)
+        benchmark_summary = QHBoxLayout()
+        benchmark_summary.addWidget(self.benchmark_toggle)
+        benchmark_summary.addWidget(self.status_value)
+        benchmark_summary.addStretch(1)
+        performance_layout.addLayout(benchmark_summary)
+        performance_layout.addWidget(benchmark_content)
+
         self.error_value = QLabel()
         self.error_value.setWordWrap(True)
-
-        benchmark_group = QGroupBox("Live benchmark")
-        benchmark_layout = QFormLayout(benchmark_group)
-        benchmark_layout.addRow(
-            "Chunks processed:",
-            self.chunks_value,
-        )
-        benchmark_layout.addRow(
-            "Audio processed:",
-            self.audio_seconds_value,
-        )
-        benchmark_layout.addRow(
-            "Elapsed:",
-            self.elapsed_value,
-        )
-        benchmark_layout.addRow(
-            "Throughput:",
-            self.chunk_rate_value,
-        )
-        benchmark_layout.addRow(
-            "Realtime factor:",
-            self.realtime_factor_value,
-        )
-
-        selection_layout = QFormLayout()
-        selection_layout.addRow(
-            "Pipeline:",
-            self.pipeline_selector,
-        )
-        selection_layout.addRow("", pipeline_actions)
-        selection_layout.addRow(
-            "Definition:",
-            self.definition_state_value,
-        )
-        selection_layout.addRow(
-            "Status:",
-            self.status_value,
-        )
-        selection_layout.addRow(
-            "Explorer active:",
-            self.active_pipeline_value,
-        )
-
         layout = QVBoxLayout(self)
-        layout.addLayout(selection_layout)
-        layout.addWidget(definition_group)
-        layout.addLayout(controls)
+        layout.addWidget(pipeline_group)
         layout.addWidget(benchmark_group)
         layout.addWidget(self.error_value)
         layout.addStretch(1)
+
+    @staticmethod
+    def _make_disclosure(title: str, content: QWidget) -> QToolButton:
+        """Collapsible content with one owner, matching Active Learning."""
+        toggle = QToolButton()
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toggle.setArrowType(Qt.ArrowType.RightArrow)
+        toggle.setAccessibleName(title)
+        content.setVisible(False)
+
+        def show_content(expanded: bool):
+            toggle.setArrowType(
+                Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+            )
+            content.setVisible(expanded)
+
+        toggle.toggled.connect(show_content)
+        return toggle
 
     def set_pipeline_names(
         self,
@@ -321,11 +339,10 @@ class PipelineView(QWidget):
         if model.selected_pipeline != self._rendered_pipeline_name:
             self._selected_stage_index = None
             self._rendered_pipeline_name = model.selected_pipeline
+            self._rendered_stages = None
 
         self.pipeline_selector.blockSignals(True)
-        self.pipeline_selector.setCurrentText(
-            model.selected_pipeline
-        )
+        self.pipeline_selector.setCurrentText(model.selected_pipeline)
         self.pipeline_selector.blockSignals(False)
 
         active = model.status in {
@@ -336,172 +353,150 @@ class PipelineView(QWidget):
         }
         busy = active or model.activation_pending
 
-        self.status_value.setText(
-            model.status.value
-        )
-        definition_state = model.pipeline_source
         if model.pipeline_editable:
-            definition_state += (
-                " · Unsaved changes"
-                if model.pipeline_dirty
-                else " · Saved"
+            definition_state = (
+                "Unsaved changes" if model.pipeline_dirty else "Saved"
             )
         else:
-            definition_state += " · Duplicate to edit"
+            definition_state = "Built-in · Duplicate in Details… to edit"
         self.definition_state_value.setText(definition_state)
+        self.active_pipeline_value.setText(
+            f"Explorer: {model.active_pipeline_name or 'None'}"
+        )
+        self.description_value.setText(model.pipeline_description)
         if model.active_pipeline_name is None:
-            active_pipeline_text = "None"
+            active_details = "None"
         elif model.active_pipeline_hash:
-            active_pipeline_text = (
+            active_details = (
                 f"{model.active_pipeline_name} · {model.active_pipeline_hash}"
             )
         else:
-            active_pipeline_text = model.active_pipeline_name
-        self.active_pipeline_value.setText(active_pipeline_text)
-        self.description_value.setText(
-            model.pipeline_description
-        )
-        self._render_stages(
-            model.pipeline_stages,
-            editable=model.pipeline_editable and not busy,
-        )
+            active_details = model.active_pipeline_name
+        self.active_pipeline_details_value.setText(active_details)
         self.pipeline_hash_value.setText(
-            model.pipeline_hash or "Calculated when the pipeline is started or activated"
+            model.pipeline_hash or "Not calculated"
         )
+        self._stages_editable = model.pipeline_editable and not busy
+        self._stage_count = len(model.pipeline_stages)
+        self._render_stages(model.pipeline_stages)
+        self.stages_list.setEnabled(not busy)
+        self.add_stage_button.setEnabled(self._stages_editable)
+        self._update_stage_controls()
 
-        self.chunks_value.setText(
-            str(model.chunks_processed)
-        )
+        self.status_value.setText(model.status.value)
+        self.chunks_value.setText(str(model.chunks_processed))
         self.audio_seconds_value.setText(
             f"{model.audio_seconds_processed:.1f} s"
         )
-        self.elapsed_value.setText(
-            f"{model.elapsed_seconds:.1f} s"
-        )
+        self.elapsed_value.setText(f"{model.elapsed_seconds:.1f} s")
         self.chunk_rate_value.setText(
             f"{model.chunks_per_second:.2f} chunks/s"
         )
         self.realtime_factor_value.setText(
             f"{model.realtime_factor:.2f}×"
         )
-        self.error_value.setText(
-            model.error or ""
-        )
+        self.error_value.setText(model.error or "")
+        self.error_value.setVisible(bool(model.error))
 
         self.pipeline_selector.setEnabled(not busy)
         self.new_pipeline_button.setEnabled(not busy)
         self.duplicate_pipeline_button.setEnabled(not busy)
-        self.save_pipeline_button.setEnabled(
-            not busy and model.pipeline_editable and model.pipeline_dirty
+        self.save_pipeline_button.setVisible(
+            model.pipeline_editable and model.pipeline_dirty
         )
+        self.save_pipeline_button.setEnabled(not busy)
         self.delete_pipeline_button.setEnabled(
             not busy and model.pipeline_editable
         )
-        self.use_in_explorer_button.setEnabled(
-            not busy
-        )
+        self.use_in_explorer_button.setEnabled(not busy)
         self.use_in_explorer_button.setText(
-            "Activating..." if model.activation_pending else "Use in Explorer"
-        )
-        self.add_stage_button.setEnabled(
-            not busy and model.pipeline_editable
+            "Activating…" if model.activation_pending else "Use in Explorer"
         )
 
-        has_selected_stage = (
-            self._selected_stage_index is not None
-            and self._selected_stage_index < len(model.pipeline_stages)
+        self.start_button.setVisible(not active)
+        self.start_button.setEnabled(not busy)
+        can_pause = model.status in {
+            PipelineRunStatus.RUNNING,
+            PipelineRunStatus.PAUSED,
+        }
+        self.pause_button.setVisible(can_pause)
+        self.pause_button.setEnabled(can_pause)
+        self.pause_button.setText(
+            "Resume" if model.status is PipelineRunStatus.PAUSED else "Pause"
         )
+        can_stop = model.status in {
+            PipelineRunStatus.STARTING,
+            PipelineRunStatus.RUNNING,
+            PipelineRunStatus.PAUSED,
+        }
+        self.stop_button.setVisible(can_stop)
+        self.stop_button.setEnabled(can_stop)
+
+    def _render_stages(self, stage_names: tuple[str, ...]):
+        # Telemetry renders frequently during benchmarking; don't rebuild the
+        # stage list unless its labels change. Still synchronise selection after
+        # a move, even if two stages happen to have identical display names.
+        names = tuple(stage_names)
+        if self._selected_stage_index is not None:
+            if self._selected_stage_index >= len(names):
+                self._selected_stage_index = None
+        self.stages_list.blockSignals(True)
+        if names != self._rendered_stages:
+            self._rendered_stages = names
+            self.stages_list.clear()
+            self.stages_list.addItems(list(names))
+        row = -1 if self._selected_stage_index is None else self._selected_stage_index
+        if self.stages_list.currentRow() != row:
+            self.stages_list.setCurrentRow(row)
+        self.stages_list.blockSignals(False)
+
+    def _on_stage_selected(self, index: int):
+        self._selected_stage_index = index if index >= 0 else None
+        self._update_stage_controls()
+
+    def _on_stage_double_clicked(self, _item):
+        self._emit_edit_stage()
+
+    def _update_stage_controls(self):
+        index = self._selected_stage_index
+        selected = (
+            index is not None and 0 <= index < self._stage_count
+        )
+        self.edit_stage_button.setEnabled(self._stages_editable and selected)
         self.remove_stage_button.setEnabled(
-            not busy
-            and model.pipeline_editable
-            and has_selected_stage
-            and len(model.pipeline_stages) > 1
+            self._stages_editable and selected and self._stage_count > 1
         )
         self.move_stage_up_button.setEnabled(
-            not busy
-            and model.pipeline_editable
-            and has_selected_stage
-            and self._selected_stage_index > 0
+            self._stages_editable and selected and index > 0
         )
         self.move_stage_down_button.setEnabled(
-            not busy
-            and model.pipeline_editable
-            and has_selected_stage
-            and self._selected_stage_index < len(model.pipeline_stages) - 1
+            self._stages_editable and selected and index < self._stage_count - 1
         )
 
-        self.start_button.setEnabled(not busy)
-        self.pause_button.setEnabled(
-            model.status in {
-                PipelineRunStatus.RUNNING,
-                PipelineRunStatus.PAUSED,
-            }
-        )
-        self.pause_button.setText(
-            "Resume"
-            if model.status is PipelineRunStatus.PAUSED
-            else "Pause"
-        )
-        self.stop_button.setEnabled(
-            model.status in {
-                PipelineRunStatus.STARTING,
-                PipelineRunStatus.RUNNING,
-                PipelineRunStatus.PAUSED,
-            }
-        )
-
-    def _render_stages(
-        self,
-        stage_names: tuple[str, ...],
-        *,
-        editable: bool,
-    ):
-        lines = []
-        for index, name in enumerate(stage_names):
-            prefix = "▶ " if index == self._selected_stage_index else ""
-            escaped_name = escape(name)
-            if editable:
-                label = f'<a href="stage:{index}">{escaped_name}</a>'
-            else:
-                label = escaped_name
-            lines.append(prefix + label)
-
-        self.stages_value.setText(
-            "<br>↓<br>".join(lines)
-        )
-
-    def _on_stage_link_activated(self, link: str):
-        prefix = "stage:"
-        if not link.startswith(prefix):
-            return
-
-        try:
-            index = int(link[len(prefix):])
-        except ValueError:
-            return
-
-        self._selected_stage_index = index
-        self.edit_stage_requested.emit(index)
+    def _emit_edit_stage(self):
+        if self.edit_stage_button.isEnabled():
+            self.edit_stage_requested.emit(self._selected_stage_index)
 
     def _emit_add_stage(self):
-        index = self._selected_stage_index
-        self.add_stage_requested.emit(-1 if index is None else index)
+        if self.add_stage_button.isEnabled():
+            index = self._selected_stage_index
+            self.add_stage_requested.emit(-1 if index is None else index)
 
     def _emit_remove_stage(self):
-        if self._selected_stage_index is not None:
+        if self.remove_stage_button.isEnabled():
             self.remove_stage_requested.emit(self._selected_stage_index)
 
     def _emit_move_stage_up(self):
-        if self._selected_stage_index is not None:
-            source_index = self._selected_stage_index
-            self._selected_stage_index -= 1
-            self.move_stage_up_requested.emit(source_index)
+        if self.move_stage_up_button.isEnabled():
+            index = self._selected_stage_index
+            self._selected_stage_index = index - 1
+            self.move_stage_up_requested.emit(index)
 
     def _emit_move_stage_down(self):
-        if self._selected_stage_index is not None:
-            source_index = self._selected_stage_index
-            self._selected_stage_index += 1
-            self.move_stage_down_requested.emit(source_index)
+        if self.move_stage_down_button.isEnabled():
+            index = self._selected_stage_index
+            self._selected_stage_index = index + 1
+            self.move_stage_down_requested.emit(index)
 
     def _on_pause_resume_clicked(self):
         if self.pause_button.text() == "Resume":

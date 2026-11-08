@@ -3,7 +3,7 @@
 from functools import partial
 from threading import Event
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, Signal, Slot
 
 from src.BinaryEmbeddingClassifier import BinaryEmbeddingClassifier
 from src.DetectionMetadata import DetectionMetadata
@@ -55,6 +55,16 @@ class DetectionsController(QObject):
         self._group_request_id = 0
         self._group_cancel_event = None
         self._page_groups = ()
+        # Checked by default, but remember an explicit choice across launches.
+        self._settings = QSettings("Caracal", "Caracal")
+        self._grouping_preferred = self._settings.value(
+            "detections/group_colours", True, type=bool
+        )
+        self.model.grouping_gap_s = self._settings.value(
+            "detections/group_gap_s", 10.0, type=float
+        )
+        self.view.group_gap.setValue(self.model.grouping_gap_s)
+        self.view.set_grouping_state(self._grouping_preferred, message="")
         self._selection_request_id = 0
         self._selection_cancel_event = None
         self._page_request_id = 0
@@ -104,6 +114,7 @@ class DetectionsController(QObject):
         view.clear_selection_requested.connect(self.clear_selection)
         view.select_all_matching_requested.connect(self.select_all_matching)
         view.select_group_requested.connect(self.select_group)
+        view.label_selected_requested.connect(self.label_selected)
         self.refresh_from_active_learning()
 
     @Slot()
@@ -245,6 +256,7 @@ class DetectionsController(QObject):
         )
         self.view.generate_button.setEnabled(bool(can_scan))
         self.view.scan_threshold.setEnabled(not self.model.scanning)
+        self.view.cancel_button.setVisible(bool(self.model.scanning))
         self.view.cancel_button.setEnabled(
             self.model.scanning
             and self._scan_cancel_event is not None
@@ -281,7 +293,7 @@ class DetectionsController(QObject):
             self.model.clear_results()
             self._page_groups = ()
             self.view.set_grouping_available(False)
-            self.view.set_grouping_state(False)
+            self.view.set_grouping_state(self._grouping_preferred, message="")
             self._runs = ()
             self.view.set_runs((), None)
             self._show_empty("Select a classifier to browse saved detections.")
@@ -331,7 +343,7 @@ class DetectionsController(QObject):
         self._page_groups = ()
         self.view.set_sort_indicator(self.model.sort_by, self.model.descending)
         self.view.set_grouping_available(run is not None)
-        self.view.set_grouping_state(False)
+        self.view.set_grouping_state(self._grouping_preferred, message="")
         self.model.run = run
         self._update_export_enabled()
         self.model.min_score = run.threshold if run else None
@@ -340,7 +352,10 @@ class DetectionsController(QObject):
         self.view.set_filters_enabled(run is not None, run.threshold if run else 0.0)
         if run is not None:
             self.view.min_score.setValue(run.threshold)
-            self._load_page(0)
+            if self._grouping_preferred:
+                self.configure_grouping(True, self.model.grouping_gap_s)
+            else:
+                self._load_page(0)
         else:
             self._show_empty("No saved scans. Prepare and train a classifier in Active Learning, then generate detections.")
 
@@ -363,7 +378,10 @@ class DetectionsController(QObject):
             self.model.sort_by, self.model.descending = "score", True
             self.view.set_sort_indicator("score", True)
         run = self.model.run
+        self._grouping_preferred = bool(enabled)
+        self._settings.setValue("detections/group_colours", self._grouping_preferred)
         self.model.grouping_gap_s = float(max_gap_s)
+        self._settings.setValue("detections/group_gap_s", self.model.grouping_gap_s)
         if run is None or not enabled:
             self.view.set_grouping_state(False)
             if run is not None:
@@ -372,7 +390,7 @@ class DetectionsController(QObject):
         if (self.metadata.space != run.embedding_space
                 or self.metadata.grid is None):
             self.view.set_grouping_state(
-                False, message="Activate this scan's matching Explorer pipeline to calculate groups."
+                True, message="Activate the matching Explorer pipeline to colour detections."
             )
             self._load_page(self.model.page)
             return
@@ -427,7 +445,9 @@ class DetectionsController(QObject):
             return
         self._group_cancel_event = None
         self.model.clear_grouping()
-        self.view.set_grouping_state(False, message=f"Grouping unavailable: {message}")
+        self.view.set_grouping_state(
+            self._grouping_preferred, message=f"Grouping unavailable: {message}"
+        )
         if self.model.run is not None:
             self._load_page(self.model.page)
 
@@ -657,6 +677,25 @@ class DetectionsController(QObject):
         )
         self.view.show_human_label_menu(global_position, detection, run, compatible)
 
+    @Slot()
+    def label_selected(self):
+        """Show label actions for the explicit bulk selection, not the inspector row."""
+        run = self.model.run
+        if run is None or self._selection_cancel_event is not None:
+            return
+        refs = frozenset(self.model.selected_refs)
+        if not refs:
+            self.view.show_status("Select detections before labelling.")
+            return
+        compatible = tuple(sorted(
+            (
+                (definition.classifier_id, definition.name)
+                for definition in self.active_learning_model.classifier_definitions
+                if getattr(definition, "embedding_space", None) == run.embedding_space
+            ), key=lambda item: (item[0] != run.classifier_id, item[1].lower())
+        ))
+        self.view.show_selection_label_menu(run, refs, compatible)
+
     @Slot(object, object, str, object)
     def request_human_label(self, ref, embedding_space, classifier_id, label):
         # A menu may outlive the active page/run if a modal event loop runs.
@@ -682,7 +721,7 @@ class DetectionsController(QObject):
         if self._selection_cancel_event is not None:
             self.view.show_status("Wait for selection to finish before labelling.")
             return
-        if (len(refs) < 2 or not refs <= self.model.selected_refs):
+        if (not refs or refs != self.model.selected_refs):
             self.view.show_status("Selection changed; labels were not applied.")
             return
         if not any(
@@ -865,8 +904,16 @@ class DetectionsController(QObject):
 
     def set_explorer_context(self, space, packets, grid):
         """Called after Explorer activates a pipeline, not on each chunk change."""
+        old_space, old_grid = self.metadata.space, self.metadata.grid
         self.metadata.set_context(space, packets, grid)
         if self.model.run is None:
+            return
+        if self._grouping_preferred and (
+            old_space != space or old_grid is not grid or
+            (self.model.grouping is None and self._group_cancel_event is None
+             and space == self.model.run.embedding_space and grid is not None)
+        ):
+            self.configure_grouping(True, self.model.grouping_gap_s)
             return
         selected = self.model.selected_index
         if selected is None:
@@ -989,6 +1036,11 @@ class DetectionsController(QObject):
         run = self.model.run
         chosen = self.view.choose_csv_export(
             run, self.model.total, self.model.selection_count,
+            filters_active=bool(
+                self.model.recording_id or
+                self.model.min_score is not None and
+                self.model.min_score > run.threshold
+            ),
         )
         if chosen is None:
             return

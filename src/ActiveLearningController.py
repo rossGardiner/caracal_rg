@@ -150,12 +150,24 @@ class ActiveLearningController(QObject):
             preserve_selection=True,
         )
 
-        if selected_changed and self.model.selected_pipeline_name is not None:
+        if selected_changed:
             self._invalidate_pending_prepare()
             self._invalidate_pending_round()
             self.model.clear_prepared_context()
-            self.model.status = ActiveLearningStatus.SELECTED
-            self.model.error = None
+            if self.model.pipeline_locked and self.model.selected_pipeline_name not in self._definitions:
+                self.model.set_failed(
+                    f"Bound pipeline {self.model.bound_pipeline_name or '(unknown)'!r} "
+                    "is unavailable. Restore it to prepare this classifier."
+                )
+            else:
+                # A definition may have changed in place. Preparation still
+                # verifies its embedding-space hash against the saved binding.
+                self.model.status = (
+                    ActiveLearningStatus.SELECTED
+                    if self.model.selected_pipeline_name is not None
+                    else ActiveLearningStatus.UNCONFIGURED
+                )
+                self.model.error = None
 
         self.refresh_view()
 
@@ -296,18 +308,22 @@ class ActiveLearningController(QObject):
 
     @Slot(str)
     def select_pipeline(self, name: str):
-        self._invalidate_pending_prepare()
-        self._invalidate_pending_round()
-
-        if not name:
-            self.model.clear_pipeline_selection()
-            self.refresh_view()
-            return
-
+        # Ignore rejected/no-op changes without cancelling a running job.
+        # The model also enforces the binding for non-GUI callers.
+        previous_name = self.model.selected_pipeline_name
+        previous_status = self.model.status
         try:
-            self.model.select_pipeline(name)
+            if not name:
+                self.model.clear_pipeline_selection()
+            else:
+                self.model.select_pipeline(name)
         except (RuntimeError, ValueError) as exc:
             self.model.error = str(exc)
+        else:
+            if (self.model.selected_pipeline_name != previous_name
+                    or self.model.status != previous_status):
+                self._invalidate_pending_prepare()
+                self._invalidate_pending_round()
 
         self.refresh_view()
 

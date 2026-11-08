@@ -122,6 +122,12 @@ class ActiveLearningModel:
         return classifier.pipeline_name
 
     @property
+    def pipeline_locked(self):
+        """The embedding-space binding makes pipeline selection permanent."""
+        classifier = self.selected_classifier
+        return classifier is not None and classifier.embedding_space is not None
+
+    @property
     def explorer_is_compatible(self):
         return (
             self.is_ready
@@ -232,7 +238,18 @@ class ActiveLearningModel:
 
         selected = self.selected_pipeline_name if preserve_selection else None
         self.available_pipelines = names
-        if selected not in names:
+        if self.pipeline_locked:
+            # Keep the saved name even if its definition has been deleted.
+            # Never replace a bound classifier's pipeline with another one.
+            self.selected_pipeline_name = self.bound_pipeline_name
+            if self.selected_pipeline_name not in names:
+                self.clear_prepared_context()
+                self.status = ActiveLearningStatus.FAILED
+                self.error = (
+                    f"Bound pipeline {self.bound_pipeline_name or '(unknown)'!r} "
+                    "is unavailable. Restore it to prepare this classifier."
+                )
+        elif selected not in names:
             self.clear_pipeline_selection()
 
     def set_classifier_definitions(
@@ -322,10 +339,25 @@ class ActiveLearningModel:
             return
 
         self.selected_classifier_id = classifier_id
-        self.selected_pipeline_name = None
+        # A prepared classifier is bound to its original embedding space.
+        # Restore its associated pipeline rather than leaving the selector empty.
+        self.selected_pipeline_name = (
+            self.bound_pipeline_name if self.pipeline_locked else None
+        )
         self.clear_prepared_context()
-        self.status = ActiveLearningStatus.UNCONFIGURED
-        self.error = None
+        if self.pipeline_locked and self.selected_pipeline_name not in self.available_pipelines:
+            self.status = ActiveLearningStatus.FAILED
+            self.error = (
+                f"Bound pipeline {self.bound_pipeline_name or '(unknown)'!r} "
+                "is unavailable. Restore it to prepare this classifier."
+            )
+        else:
+            self.status = (
+                ActiveLearningStatus.SELECTED
+                if self.selected_pipeline_name is not None
+                else ActiveLearningStatus.UNCONFIGURED
+            )
+            self.error = None
 
     def clear_classifier_selection(self):
         self.selected_classifier_id = None
@@ -337,6 +369,11 @@ class ActiveLearningModel:
     def select_pipeline(self, name: str):
         if self.selected_classifier is None:
             raise RuntimeError("Select or create a classifier first")
+        if self.pipeline_locked and name != self.bound_pipeline_name:
+            raise ValueError(
+                "This classifier is bound to its saved pipeline. "
+                "Create a new classifier to use another pipeline."
+            )
         if name not in self.available_pipelines:
             raise ValueError(f"Unknown pipeline: {name}")
 
@@ -352,6 +389,8 @@ class ActiveLearningModel:
         self.error = None
 
     def clear_pipeline_selection(self):
+        if self.pipeline_locked:
+            raise ValueError("Cannot clear the pipeline of a bound classifier")
         self.selected_pipeline_name = None
         self.clear_prepared_context()
         if self.selected_classifier is None:
