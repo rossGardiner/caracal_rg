@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from src.ApplicationIdentity import STORAGE_DIRECTORY, LEGACY_STORAGE_DIRECTORY
+from src.ApplicationIdentity import existing_or_default_path
 
 import torch
 
@@ -35,9 +35,7 @@ class ActiveLearningClassifierStore:
             root = Path(config_home).expanduser()
         else:
             root = Path.home() / ".config"
-        target = root / STORAGE_DIRECTORY / "active_learning_classifiers.json"
-        legacy = root / LEGACY_STORAGE_DIRECTORY / "active_learning_classifiers.json"
-        return legacy if not target.exists() and legacy.exists() else target
+        return existing_or_default_path(root, "active_learning_classifiers.json")
 
     def load(self):
         if not self.path.exists():

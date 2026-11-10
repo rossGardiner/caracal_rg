@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressD
 from src.ApplicationTheme import apply_application_theme
 from src.MainWindow import MainWindow
 from src.ProjectFile import ProjectFile
-from src.ApplicationIdentity import APP_NAME
+from src.ApplicationIdentity import APP_NAME, ORGANIZATION_NAME, CI_SMOKE_TEST_ENV
 from src.QtSignalHandler import QtSignalHandler
 
 
@@ -31,6 +31,8 @@ def main():
     options, qt_args = parser.parse_known_args(sys.argv[1:])
 
     app = QApplication([sys.argv[0], *qt_args])
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(ORGANIZATION_NAME)
     apply_application_theme(app)
     signal_handler = QtSignalHandler(app)  # Create once, not for every project.
     window = MainWindow()
@@ -832,7 +834,7 @@ def main():
         QTimer.singleShot(0, lambda: activate_project())
     # Automated bundled-app smoke test: only exercised in CI, and only after
     # the main window has been constructed and its event loop is running.
-    if os.environ.get("AUDIO_ANALYSIS_CI_SMOKE_TEST") == "1":
+    if os.environ.get(CI_SMOKE_TEST_ENV) == "1" or os.environ.get("AUDIO_ANALYSIS_CI_SMOKE_TEST") == "1":
         QTimer.singleShot(250, app.quit)
     return app.exec()
 
