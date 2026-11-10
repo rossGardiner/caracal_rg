@@ -45,6 +45,20 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+          
+      - name: Download Perch model
+        shell: bash
+        env:
+            MODEL_URL: ${{ vars.PERCH_ONNX_URL }}
+            MODEL_SHA256: ${{ vars.PERCH_ONNX_SHA256 }}
+        run: |
+            mkdir -p assets
+
+            curl --fail --location --retry 3 \
+                "$MODEL_URL" \
+                -o assets/perch_v2.onnx
+
+            python -c "import hashlib, os, pathlib; p = pathlib.Path('assets/perch_v2.onnx'); actual = hashlib.sha256(p.read_bytes()).hexdigest(); assert actual == os.environ['MODEL_SHA256'].lower(), 'Perch model checksum mismatch'"
 
       - name: Linux Qt runtime libraries
         if: runner.os == 'Linux'
