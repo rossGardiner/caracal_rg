@@ -91,14 +91,14 @@ jobs:
           python -c 'import PySide6.QtWidgets, PySide6.QtMultimedia, pyqtgraph, librosa, soundfile, onnxruntime, torch'
           python -c 'from caracal import SyslogParser; print("Caracal parser available")'
 
-       - name: Freeze and smoke-test application
-         shell: bash
+      - name: Freeze and smoke-test application
+        shell: bash
          env:
-           PERCH_ONNX_URL: ${{ vars.PERCH_ONNX_URL }}
-           PERCH_ONNX_SHA256: ${{ vars.PERCH_ONNX_SHA256 }}
-         run: |
-           python scripts/build_binaries.py \
-             --platform '${{ matrix.platform }}'
+          PERCH_ONNX_URL: ${{ vars.PERCH_ONNX_URL }}
+          PERCH_ONNX_SHA256: ${{ vars.PERCH_ONNX_SHA256 }}
+        run: |
+          python scripts/build_binaries.py \
+            --platform '${{ matrix.platform }}'
       - name: Upload binary
         uses: actions/upload-artifact@v6
         with:
