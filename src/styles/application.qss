@@ -1,5 +1,5 @@
 /*
- * Audio Analysis UI — a compact slate / sea-glass theme for Qt Widgets.
+ * Application UI — a compact slate / sea-glass theme for Qt Widgets.
  * Inspired by the clean, low-glare approach of QDarkStyleSheet and
  * the control treatments in Qt's official style-sheet examples.
  * Original application-specific stylesheet; no external QSS dependency.

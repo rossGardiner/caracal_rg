@@ -4,7 +4,7 @@ from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from src.ApplicationIdentity import STORAGE_DIRECTORY, LEGACY_STORAGE_DIRECTORY
+from src.ApplicationIdentity import existing_or_default_path
 import sqlite3
 
 from src.Detection import Detection, DetectionRun, _identity, _score
@@ -157,9 +157,7 @@ class DetectionStore:
     def default_path():
         root = os.environ.get("XDG_DATA_HOME")
         home = Path(root).expanduser() if root else Path.home() / ".local" / "share"
-        target = home / STORAGE_DIRECTORY / "detections.sqlite3"
-        legacy = home / LEGACY_STORAGE_DIRECTORY / "detections.sqlite3"
-        return legacy if not target.exists() and legacy.exists() else target
+        return existing_or_default_path(home, "detections.sqlite3")
 
     @contextmanager
     def _connect(self):
@@ -227,14 +225,9 @@ class DetectionStore:
             rows = connection.execute(query, parameters).fetchall()
         return tuple(self._run_from_row(row) for row in rows)
 
-    def count_detections(self, run_id, *, min_score=None, recording_id=None,
-                         cancel_event=None):
+    def count_detections(self, run_id, *, min_score=None, recording_id=None):
         where, parameters = self._filters(run_id, min_score, recording_id)
         with self._connect() as connection:
-            if cancel_event is not None:
-                connection.set_progress_handler(
-                    lambda: int(cancel_event.is_set()), 1000,
-                )
             row = connection.execute(
                 "SELECT COUNT(*) FROM detections" + where, parameters
             ).fetchone()
@@ -280,7 +273,7 @@ class DetectionStore:
     def list_detections(
         self, run_id, *, min_score=None, recording_id=None,
         sort_by="score", descending=True, limit=200, offset=0,
-        sort_value=None, grouping_id=None, cancel_event=None,
+        sort_value=None, grouping_id=None,
     ):
         """Return a stable, globally sorted database page (never page-local sort)."""
         limit, offset = self._page(limit, offset)
@@ -290,12 +283,6 @@ class DetectionStore:
             grouping_id=grouping_id,
         )
         with self._connect() as connection:
-            if cancel_event is not None:
-                # Abort expensive sorts when a newer table request supersedes
-                # this one; otherwise the one-worker queue can lag behind.
-                connection.set_progress_handler(
-                    lambda: int(cancel_event.is_set()), 1000,
-                )
             if needs_function:
                 connection.create_function("detection_sort_value", 2, sort_value)
             rows = connection.execute(

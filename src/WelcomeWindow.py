@@ -7,6 +7,7 @@ user-specific stores. New/Open are handled by the application entry point.
 import os
 
 from PySide6.QtCore import Qt, QUrl, Signal
+from src.ApplicationIdentity import WIKI_URL_ENV, DEVELOPER_DOCS_URL_ENV
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
@@ -15,16 +16,21 @@ from PySide6.QtWidgets import (
 
 # Set these to the canonical URLs before packaging a customer build.
 # Environment variables are supported for development and testing.
-WIKI_URL = "https://rossgardiner.github.io/caracal_rg/wiki.html"
-DEVELOPER_DOCS_URL = "https://rossgardiner.github.io/caracal_rg/files.html"
+WIKI_URL = ""
+DEVELOPER_DOCS_URL = ""
 
 
 def open_documentation(parent, *, developer=False):
     """Open configured documentation in the system browser, never guess a URL."""
     label = "Developer Documentation" if developer else "Wiki"
-    variable = "AUDIO_ANALYSIS_DEVELOPER_DOCS_URL" if developer else "AUDIO_ANALYSIS_WIKI_URL"
-    legacy_variable = "CARACAL_DEVELOPER_DOCS_URL" if developer else "CARACAL_WIKI_URL"
-    address = os.environ.get(variable) or os.environ.get(legacy_variable) or (
+    variable = DEVELOPER_DOCS_URL_ENV if developer else WIKI_URL_ENV
+    older_variables = (
+        ("AUDIO_ANALYSIS_DEVELOPER_DOCS_URL", "CARACAL_DEVELOPER_DOCS_URL")
+        if developer else ("AUDIO_ANALYSIS_WIKI_URL", "CARACAL_WIKI_URL")
+    )
+    address = os.environ.get(variable) or next(
+        (value for name in older_variables if (value := os.environ.get(name))), ""
+    ) or (
         DEVELOPER_DOCS_URL if developer else WIKI_URL
     )
     url = QUrl(address)
