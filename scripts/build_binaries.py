@@ -132,6 +132,9 @@ def bundle(platform: str, model: Path) -> Path:
     args = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onedir", "--windowed",
+        # Keep support files beside the executable on Windows/Linux. macOS
+        # .app bundles retain their native Contents/Frameworks layout.
+        *([] if platform.startswith("macos") else ["--contents-directory", "."]),
         "--name", NAME,
         "--paths", str(ROOT),
         "--add-data", f"{model}{os.pathsep}assets",
