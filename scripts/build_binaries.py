@@ -1,4 +1,4 @@
-"""Build, smoke-test and archive Audio Analysis with PyInstaller.
+"""Build, smoke-test and archive the app named in ApplicationIdentity.py.
 
 Executed by .github/workflows/build-binaries.yml on the target OS. The
 application is intentionally built in onedir mode to keep Qt, PyTorch and
@@ -21,7 +21,13 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "Caracal_RG"
+# python scripts/build_binaries.py starts with scripts/ on sys.path; explicitly
+# include the repository root to import the same identity as the application.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from src.ApplicationIdentity import BINARY_NAME, CI_SMOKE_TEST_ENV  # noqa: E402
+
+NAME = BINARY_NAME
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -85,7 +91,7 @@ def ensure_model_available() -> Path:
     try:
         with tempfile.NamedTemporaryFile(dir=model.parent, prefix=".perch-", suffix=".part", delete=False) as tmp:
             tmp_path = Path(tmp.name)
-            req = urllib.request.Request(url, headers={"User-Agent": "AudioAnalysis-CI/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": f"{NAME}-CI/1.0"})
             with urllib.request.urlopen(req, timeout=120) as response:
                 for chunk in iter(lambda: response.read(1024 * 1024), b""):
                     tmp.write(chunk)
@@ -154,7 +160,7 @@ def smoke_test(executable: Path) -> None:
     # Startup-only smoke test. The application exits with code 0 after the
     # Getting Started window has been created and the event loop has started.
     env = os.environ.copy()
-    env["AUDIO_ANALYSIS_CI_SMOKE_TEST"] = "1"
+    env[CI_SMOKE_TEST_ENV] = "1"
     env["QT_QPA_PLATFORM"] = "offscreen"
     run([str(executable), "-platform", "offscreen"], env=env)
 
@@ -205,4 +211,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
