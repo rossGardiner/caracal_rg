@@ -8,7 +8,11 @@ ONNX Runtime native libraries next to the executable.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import shutil
+import tempfile
+import urllib.request
 from pathlib import Path
 import subprocess
 import sys
@@ -17,7 +21,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "AudioAnalysis"
+NAME = "Caracal_RG"
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -36,18 +40,97 @@ def ensure_parser_available() -> None:
         ) from exc
 
 
-def bundle(platform: str) -> Path:
-    # No requirements or user datasets/ONNX models are silently included:
-    # projects reference those resources by path. See the build README.
-    stylesheet = ROOT / "src" / "styles" / "application.qss"
-    if not stylesheet.is_file():
-        raise SystemExit(f"Missing stylesheet resource: {stylesheet}")
+def ensure_model_available() -> Path:
+    """Get the Perch model and verify its SHA-256 before bundling.
+
+    GitHub Actions must set PERCH_ONNX_URL and PERCH_ONNX_SHA256 as env vars.
+    Developers can build offline when they already have a local model file.
+    """
+    model = ROOT / "assets" / "perch_v2.onnx"
+    url = os.environ.get("PERCH_ONNX_URL", "").strip()
+    checksum = os.environ.get("PERCH_ONNX_SHA256", "").strip().lower()
+
+    if checksum and (len(checksum) != 64 or any(c not in "0123456789abcdef" for c in checksum)):
+        raise SystemExit("PERCH_ONNX_SHA256 must contain 64 hexadecimal characters")
+    if os.environ.get("CI") and not checksum:
+        raise SystemExit("PERCH_ONNX_SHA256 must be set for CI builds")
+
+    def digest(path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    if model.is_file() and model.stat().st_size > 0:
+        if not checksum or digest(model) == checksum:
+            print(f"Using Perch model: {model}", flush=True)
+            return model
+        if not url:
+            raise SystemExit("Local Perch model checksum mismatch; set PERCH_ONNX_URL to redownload")
+        print("Local Perch model checksum mismatch; downloading verified copy", flush=True)
+
+    if not url:
+        raise SystemExit(
+            "Perch ONNX model is missing at assets/perch_v2.onnx. "
+            "Set PERCH_ONNX_URL and PERCH_ONNX_SHA256 or provide a verified model locally."
+        )
+    if not url.startswith("https://"):
+        raise SystemExit("PERCH_ONNX_URL must be an HTTPS URL")
+    if not checksum:
+        raise SystemExit("PERCH_ONNX_SHA256 is required when downloading the model")
+
+    model.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=model.parent, prefix=".perch-", suffix=".part", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            req = urllib.request.Request(url, headers={"User-Agent": "AudioAnalysis-CI/1.0"})
+            with urllib.request.urlopen(req, timeout=120) as response:
+                for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                    tmp.write(chunk)
+        actual = digest(tmp_path)
+        if actual != checksum:
+            raise SystemExit(f"Perch model SHA-256 mismatch: expected {checksum}, got {actual}")
+        if tmp_path.stat().st_size == 0:
+            raise SystemExit("Downloaded Perch model is empty")
+        os.replace(tmp_path, model)
+        print(f"Downloaded and verified Perch ONNX model: {model}", flush=True)
+        return model
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+def bundle(platform: str, model: Path) -> Path:
+    # User recordings and embedding caches are referenced by path, not bundled.
+    # During the application rename this resource was called caracal.qss.
+    # Accept either checkout layout, and bundle both names so either version
+    # of ApplicationTheme.py can find the stylesheet at runtime.
+    styles_dir = ROOT / "src" / "styles"
+    stylesheet = next((p for p in (
+        styles_dir / "application.qss", styles_dir / "caracal.qss"
+    ) if p.is_file()), None)
+    if stylesheet is None:
+        raise SystemExit(
+            "Missing stylesheet: expected src/styles/application.qss or "
+            "src/styles/caracal.qss. Check that the stylesheet is tracked by git."
+        )
+
+    staged_styles = ROOT / "build" / "ci-styles"
+    staged_styles.mkdir(parents=True, exist_ok=True)
+    for filename in ("application.qss", "caracal.qss"):
+        shutil.copyfile(stylesheet, staged_styles / filename)
+    print(f"Bundling stylesheet from {stylesheet.relative_to(ROOT)}", flush=True)
+
     args = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onedir", "--windowed",
         "--name", NAME,
         "--paths", str(ROOT),
-        "--add-data", f"{stylesheet}{os.pathsep}src/styles",
+        "--add-data", f"{model}{os.pathsep}assets",
+        "--add-data", f"{staged_styles / 'application.qss'}{os.pathsep}src/styles",
+        "--add-data", f"{staged_styles / 'caracal.qss'}{os.pathsep}src/styles",
         # PipelineFactory loads the Caracal stage dynamically. Make sure it
         # and the parser integration are included, not just the entrypoint.
         "--hidden-import", "src.CaracalStreamer",
@@ -114,10 +197,12 @@ def main() -> None:
     ))
     args = parser.parse_args()
     ensure_parser_available()
-    executable = bundle(args.platform)
+    model = ensure_model_available()
+    executable = bundle(args.platform, model)
     smoke_test(executable)
     create_archive(args.platform)
 
 
 if __name__ == "__main__":
     main()
+
