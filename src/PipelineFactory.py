@@ -15,6 +15,7 @@ from src.Pipeline import Pipeline
 from src.PipelineDefinition import PipelineDefinition, StageDefinition
 from src.PipelineLink import PipelineLink
 from src.Resampler import Resampler
+from src.ResourcePaths import resource_path
 from src.SpeedometerLink import SpeedometerLink
 
 
@@ -246,9 +247,13 @@ def _embedding_cache(
 def _build_caracal_streamer(parameters, context):
     from src.CaracalStreamer import CaracalStreamer
 
-    return CaracalStreamer(
-        rootpath=parameters["rootpath"],
-    )
+    rootpath = parameters["rootpath"]
+    # A portable alias for the example recordings. Real user paths are left
+    # unchanged, and the stored pipeline definition remains portable.
+    if rootpath.replace("\\", "/") == "assets/dummy_data":
+        rootpath = str(resource_path("assets/dummy_data"))
+
+    return CaracalStreamer(rootpath=rootpath)
 
 
 def _build_audio_buffer_loader(parameters, context):

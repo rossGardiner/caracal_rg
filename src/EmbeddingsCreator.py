@@ -12,6 +12,7 @@ import onnxruntime as ort
 
 from src.AudioBuffer import AudioBuffer
 from src.PipelineLink import PipelineLink
+from src.ResourcePaths import resource_path
 
 ort.preload_dlls(directory="")
 
@@ -111,7 +112,12 @@ class EmbeddingsCreator(PipelineLink):
         model_path,
         use_cuda,
     ):
-        model_path_object = Path(model_path)
+        # Resolve only our bundled model; user-specified paths keep their
+        # existing meaning (absolute or relative to the working directory).
+        if str(model_path).replace("\\", "/") == "assets/perch_v2.onnx":
+            model_path_object = resource_path("assets/perch_v2.onnx")
+        else:
+            model_path_object = Path(model_path).expanduser()
 
         if not model_path_object.is_file():
             raise FileNotFoundError(
