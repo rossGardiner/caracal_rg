@@ -2,8 +2,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-import torch
-from torch import nn
 
 
 @dataclass(frozen=True)
@@ -87,38 +85,6 @@ class BinaryClassifierTrainingResult:
     available_negative_count: int
     training_negative_count: int
     final_loss: float
-
-
-class _EmbeddingBinaryNetwork(nn.Module):
-    """Tiny PyTorch head placed on top of fixed embedding vectors."""
-
-    def __init__(
-        self,
-        embedding_dimension: int,
-        hidden_dimension: Optional[int],
-    ):
-        super().__init__()
-
-        if hidden_dimension is None:
-            self.network = nn.Linear(
-                embedding_dimension,
-                1,
-            )
-        else:
-            self.network = nn.Sequential(
-                nn.Linear(
-                    embedding_dimension,
-                    hidden_dimension,
-                ),
-                nn.ReLU(),
-                nn.Linear(
-                    hidden_dimension,
-                    1,
-                ),
-            )
-
-    def forward(self, vectors):
-        return self.network(vectors).squeeze(-1)
 
 
 class BinaryEmbeddingClassifier:
@@ -224,7 +190,9 @@ class BinaryEmbeddingClassifier:
         if not isinstance(model_state, dict):
             raise ValueError("Stored model_state must be a dictionary")
 
-        model = _EmbeddingBinaryNetwork(
+        from src.EmbeddingBinaryNetwork import EmbeddingBinaryNetwork
+
+        model = EmbeddingBinaryNetwork(
             embedding_dimension=embedding_dimension,
             hidden_dimension=self.parameters.hidden_dimension,
         )
@@ -347,10 +315,15 @@ class BinaryEmbeddingClassifier:
         training_vectors = training_vectors[permutation]
         training_labels = training_labels[permutation]
 
+        import torch
+        from torch import nn
+
         device = self._resolve_device()
         self._seed_torch()
 
-        model = _EmbeddingBinaryNetwork(
+        from src.EmbeddingBinaryNetwork import EmbeddingBinaryNetwork
+
+        model = EmbeddingBinaryNetwork(
             embedding_dimension=embedding_dimension,
             hidden_dimension=self.parameters.hidden_dimension,
         ).to(device)
@@ -469,6 +442,8 @@ class BinaryEmbeddingClassifier:
         self._model = self._model.to(device)
         self._model.eval()
 
+        import torch
+
         with torch.no_grad():
             vector_tensor = torch.from_numpy(
                 vectors
@@ -512,6 +487,8 @@ class BinaryEmbeddingClassifier:
         )
 
     def _resolve_device(self):
+        import torch
+
         device = torch.device(
             self.parameters.device
         )
@@ -525,6 +502,8 @@ class BinaryEmbeddingClassifier:
         return device
 
     def _seed_torch(self):
+        import torch
+
         torch.manual_seed(
             self.parameters.random_seed
         )

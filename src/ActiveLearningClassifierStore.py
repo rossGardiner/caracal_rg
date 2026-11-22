@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from src.ApplicationIdentity import existing_or_default_path
 
-import torch
 
 from src.ActiveLearningClassifierDefinition import (
     ActiveLearningClassifierDefinition,
@@ -94,6 +93,8 @@ class ActiveLearningClassifierStore:
         path = self._model_path(classifier_id)
         if not path.exists():
             return None
+        import torch
+
         return torch.load(
             path,
             map_location="cpu",
@@ -121,6 +122,8 @@ class ActiveLearningClassifierStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = path.with_suffix(path.suffix + ".tmp")
         try:
+            import torch
+
             torch.save(state, temporary_path)
             temporary_path.replace(path)
         finally:
