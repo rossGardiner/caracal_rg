@@ -5,6 +5,13 @@
 
 !assets/
 !assets/* 
+# Ship the three small synthetic Caracal sessions with desktop builds.
+!assets/dummy_data/
+!assets/dummy_data/**
+
+# Allow the release builder and test-data generator in a fresh checkout.
+!scripts/
+!scripts/*.py
 
 !test/
 !test/**/

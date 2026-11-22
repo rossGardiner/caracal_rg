@@ -108,8 +108,22 @@ def ensure_model_available() -> Path:
             tmp_path.unlink(missing_ok=True)
 
 
+def verify_dummy_data(root: Path) -> None:
+    """Fail the build if any of the three bundled sample sessions is missing."""
+    for session_number in range(1, 4):
+        session = root / f"session_{session_number:03d}"
+        if not (session / "syslog.txt").is_file() or not any(session.rglob("*.wav")):
+            raise SystemExit(
+                f"Missing Caracal demo session at {session}. "
+                "Each session needs a syslog.txt and at least one WAV file."
+            )
+
+
 def bundle(platform: str, model: Path) -> Path:
-    # User recordings and embedding caches are referenced by path, not bundled.
+    # Real user recordings and embedding caches are referenced by path, not bundled.
+    # Only the small synthetic sample dataset is packaged into the application.
+    dummy_data = ROOT / "assets" / "dummy_data"
+    verify_dummy_data(dummy_data)
     # During the application rename this resource was called caracal.qss.
     # Accept either checkout layout, and bundle both names so either version
     # of ApplicationTheme.py can find the stylesheet at runtime.
@@ -138,6 +152,7 @@ def bundle(platform: str, model: Path) -> Path:
         "--name", NAME,
         "--paths", str(ROOT),
         "--add-data", f"{model}{os.pathsep}assets",
+        "--add-data", f"{dummy_data}{os.pathsep}assets/dummy_data",
         "--add-data", f"{staged_styles / 'application.qss'}{os.pathsep}src/styles",
         "--add-data", f"{staged_styles / 'caracal.qss'}{os.pathsep}src/styles",
         # PipelineFactory loads the Caracal stage dynamically. Make sure it
@@ -148,6 +163,15 @@ def bundle(platform: str, model: Path) -> Path:
         str(ROOT / "src" / "main.py"),
     ]
     run(args)
+
+    # Check the generated distribution, not just the source checkout. This
+    # guards against accidentally shipping a build with missing example data.
+    if platform.startswith("macos"):
+        bundled_data = ROOT / "dist" / f"{NAME}.app" / "Contents" / "Resources" / "assets" / "dummy_data"
+    else:
+        bundled_data = ROOT / "dist" / NAME / "assets" / "dummy_data"
+    verify_dummy_data(bundled_data)
+    print(f"Bundled Caracal example data: {bundled_data}", flush=True)
 
     if platform.startswith("macos"):
         expected = ROOT / "dist" / f"{NAME}.app" / "Contents" / "MacOS" / NAME
