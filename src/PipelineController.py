@@ -94,6 +94,7 @@ class PipelineController(QObject):
 
         self.runner.prepared.connect(self._on_prepared)
         self.runner.started.connect(self._on_started)
+        self.runner.workload_ready.connect(self._on_workload_ready)
         self.runner.progress.connect(self._on_progress)
         self.runner.finished.connect(self._on_finished)
         self.runner.stopped.connect(self._on_stopped)
@@ -113,6 +114,67 @@ class PipelineController(QObject):
         self.model.select_pipeline(name)
         self._apply_selected_definition()
         self.refresh_view()
+
+    GUIDED_PIPELINE_NAME = "Guided embedding pipeline"
+
+    def configure_guided_pipeline(self, data_root: str, model_path: str) -> str:
+        """Persist a conventional embedding pipeline for the guided workspace.
+
+        The definition is a project-owned copy of the built-in template.  No
+        alternative runtime, worker, cache, or stage implementation is created.
+        Saving is atomic with respect to the controller's in-memory state.
+        """
+        if self._run_is_active() or self.model.activation_pending:
+            raise RuntimeError("Wait for the current pipeline operation to finish")
+        data_root = str(data_root).strip()
+        model_path = str(model_path).strip()
+        if not data_root or not model_path:
+            raise ValueError("Select both a data directory and an embedding model")
+
+        template = self._new_pipeline_template
+        # Do not overwrite an unrelated user pipeline that happens to have
+        # chosen the reserved guided-workflow name.
+        existing = self.pipeline_definitions.get(self.GUIDED_PIPELINE_NAME)
+        if existing is not None and (
+            existing.name in self._builtin_pipeline_names
+            or tuple(stage.stage_type for stage in existing.stages)
+            != tuple(stage.stage_type for stage in template.stages)
+        ):
+            raise ValueError("A different pipeline already uses the guided pipeline name")
+
+        stages = []
+        for stage in template.stages:
+            parameters = dict(stage.parameters)
+            if stage.stage_type == "caracal_streamer":
+                parameters["rootpath"] = data_root
+            elif stage.stage_type == "embeddings_creator":
+                parameters["model_path"] = model_path
+            stages.append(StageDefinition(stage.stage_type, stage.label, parameters))
+        definition = PipelineDefinition(
+            name=self.GUIDED_PIPELINE_NAME,
+            description="Embedding pipeline configured through Guided Mode.",
+            stages=tuple(stages),
+        )
+        self.pipeline_factory.validate_definition(definition)
+        persisted = dict(self._persisted_user_definitions)
+        persisted[definition.name] = definition.copy()
+        self.definition_store.save(tuple(persisted.values()))
+        # A completed run of a previous pipeline/configuration is not evidence
+        # that embeddings for this new configuration have been generated.
+        if self.model.selected_pipeline != definition.name or existing != definition:
+            self._reset_run_state()
+            self.model.status = PipelineRunStatus.IDLE
+        self._persisted_user_definitions = persisted
+        self.pipeline_definitions[definition.name] = definition
+        self.model.set_available_pipelines(
+            tuple(self.pipeline_definitions), selected_pipeline=definition.name
+        )
+        self._apply_selected_definition()
+        self._refresh_pipeline_names()
+        self._emit_pipeline_definitions_changed()
+        self.model.error = None
+        self.refresh_view()
+        return definition.name
 
     @Slot()
     def new_pipeline(self):
@@ -445,6 +507,12 @@ class PipelineController(QObject):
             self.model.status = PipelineRunStatus.RUNNING
             self.refresh_view()
 
+    @Slot(float, int)
+    def _on_workload_ready(self, total_audio_seconds: float, total_recordings: int):
+        self.model.total_audio_seconds = total_audio_seconds
+        self.model.total_recordings = total_recordings
+        self.refresh_view()
+
     @Slot(int, float, float, float, float)
     def _on_progress(
         self,
@@ -591,6 +659,8 @@ class PipelineController(QObject):
         self.model.pipeline_hash = None
         self.model.chunks_processed = 0
         self.model.audio_seconds_processed = 0.0
+        self.model.total_audio_seconds = None
+        self.model.total_recordings = None
         self.model.elapsed_seconds = 0.0
         self.model.chunks_per_second = 0.0
         self.model.realtime_factor = 0.0

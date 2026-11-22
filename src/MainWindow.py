@@ -199,6 +199,10 @@ class MainWindow(QMainWindow):
         self._detached_windows: dict[QDockWidget, _DetachedWorkspaceWindow] = {}
         self._dock_return_areas: dict[QDockWidget, Qt.DockWidgetArea] = {}
         self._closing = False
+        self.guided_view = None
+        self._guided_mode = False
+        self._guided_dock_visibility = {}
+        self._advanced_layout_state = None
 
         # Keep ordinary docking/splitting native. Pop-out workspaces use real
         # top-level windows rather than floating QDockWidget tool windows.
@@ -275,10 +279,94 @@ class MainWindow(QMainWindow):
         self.reset_workspace_layout()
         self._set_project_actions(True)
 
+    def install_guided_view(self, guided_view: QWidget):
+        """Expose Guided Mode for an already composed project session."""
+        if not self._workspace_docks or self.guided_view is not None:
+            raise RuntimeError("Guided view must be installed once per project")
+        self.guided_view = guided_view
+        self._set_project_actions(True)
+        # Each project opens in Guided Mode by default, even if the user
+        # switched to Advanced Mode in a previous project or session.
+        self.set_guided_mode(True)
+
+    def set_guided_mode(self, enabled: bool):
+        """Switch presentation only; keep every worker/controller alive."""
+        if not self._workspace_docks or self.guided_view is None:
+            return
+        enabled = bool(enabled)
+        if enabled == self._guided_mode:
+            return
+        if enabled:
+            self._advanced_layout_state = self.saveState()
+            self._guided_dock_visibility = {
+                dock: (self._detached_windows[dock].isVisible()
+                       if dock in self._detached_windows else dock.isVisible())
+                for dock in self._workspace_docks
+            }
+            for dock in self._workspace_docks:
+                detached = self._detached_windows.get(dock)
+                if detached is not None:
+                    detached.hide()
+                else:
+                    dock.hide()
+            self.setCentralWidget(self.guided_view)
+            self._guided_mode = True
+            self.guided_view.set_active(True)
+        else:
+            self.guided_view.set_active(False)
+            self.takeCentralWidget()
+            self.guided_view.setParent(self)  # Retain the same project-owned view.
+            self._guided_mode = False
+            for dock, was_visible in self._guided_dock_visibility.items():
+                detached = self._detached_windows.get(dock)
+                if detached is not None:
+                    detached.setVisible(was_visible)
+                else:
+                    dock.setVisible(was_visible)
+                self._sync_workspace_action(dock)
+            self._guided_dock_visibility.clear()
+        self.workspace_toolbar.setVisible(not enabled)
+        self._sync_mode_actions()
+
+    def project_workspace_state(self):
+        """Persist the Advanced layout, not temporarily hidden Guided docks."""
+        if self._guided_mode and self._advanced_layout_state is not None:
+            return self._advanced_layout_state
+        return self.saveState()
+
+    def restore_project_workspace_state(self, state):
+        """Restore dock layout without exposing docks over Guided Mode."""
+        restored = self.restoreState(state)
+        if restored and self._guided_mode:
+            self._advanced_layout_state = self.saveState()
+            self._guided_dock_visibility = {
+                dock: (self._detached_windows[dock].isVisible()
+                       if dock in self._detached_windows else dock.isVisible())
+                for dock in self._workspace_docks
+            }
+            for dock in self._workspace_docks:
+                detached = self._detached_windows.get(dock)
+                if detached is not None:
+                    detached.hide()
+                else:
+                    dock.hide()
+        return restored
+
     def clear_project_views(self):
         """Detach (without deleting) old project docks; caller retires them safely."""
         for dock in tuple(self._detached_windows):
             self._redock_workspace(dock)
+        if self._guided_mode:
+            self.guided_view.set_active(False)
+            self.takeCentralWidget()
+            self._guided_mode = False
+        if self.guided_view is not None:
+            self.guided_view.set_active(False)
+            self.guided_view.hide()
+            self.guided_view.deleteLater()
+            self.guided_view = None
+            self._guided_dock_visibility.clear()
+            self._advanced_layout_state = None
         docks = tuple(self._workspace_docks)
         for dock in docks:
             dock.hide()
@@ -301,7 +389,7 @@ class MainWindow(QMainWindow):
         for action in (self.save_project_action, self.save_as_project_action,
                        self.close_project_action):
             action.setEnabled(is_open)
-        self.workspace_toolbar.setVisible(is_open)
+        self.workspace_toolbar.setVisible(is_open and not self._guided_mode)
         self.view_menu.menuAction().setVisible(is_open)
 
     def show_welcome(self):
@@ -433,13 +521,28 @@ class MainWindow(QMainWindow):
 
         self.reset_layout_action = QAction("Reset workspace layout", self)
         self.reset_layout_action.triggered.connect(self.reset_workspace_layout)
+        self.guided_mode_action = QAction("Guided Mode", self)
+        self.advanced_mode_action = QAction("Advanced Mode", self)
+        self.guided_mode_action.triggered.connect(lambda: self.set_guided_mode(True))
+        self.advanced_mode_action.triggered.connect(lambda: self.set_guided_mode(False))
         self._populate_workspace_actions()
+
+    def _sync_mode_actions(self):
+        """Mode commands are actions, not persistent check-boxes."""
+        available = bool(self._workspace_docks and self.guided_view is not None)
+        self.guided_mode_action.setEnabled(available and not self._guided_mode)
+        self.advanced_mode_action.setEnabled(available and self._guided_mode)
 
     def _populate_workspace_actions(self):
         """Rebuild actions, so no QAction points at a destroyed project dock."""
         self.view_menu.clear()
         self.workspace_toolbar.clear()
         self._workspace_actions.clear()
+        self._sync_mode_actions()
+        if self._workspace_docks:
+            self.view_menu.addAction(self.guided_mode_action)
+            self.view_menu.addAction(self.advanced_mode_action)
+            self.view_menu.addSeparator()
         for dock in self._workspace_docks:
             action = QAction(dock.windowTitle(), self.view_menu)
             action.setCheckable(True)
@@ -463,6 +566,8 @@ class MainWindow(QMainWindow):
         action.blockSignals(False)
 
     def _set_workspace_visible(self, dock: QDockWidget, visible: bool):
+        if self._guided_mode:
+            return  # Workspaces are accessible again when leaving Guided Mode.
         detached = self._detached_windows.get(dock)
         if detached is not None:
             if visible:
@@ -690,6 +795,8 @@ class MainWindow(QMainWindow):
     ):
         """Reveal and select one composed application view."""
 
+        if self._guided_mode:
+            self.set_guided_mode(False)
         dock = self._view_docks.get(
             id(view)
         )

@@ -111,6 +111,7 @@ class PipelineRunner(QObject):
 
     prepared = Signal(str)
     started = Signal()
+    workload_ready = Signal(float, int)  # estimated audio seconds, recordings
     progress = Signal(int, float, float, float, float)
     finished = Signal()
     stopped = Signal()
@@ -252,6 +253,14 @@ class PipelineRunner(QObject):
 
             if pause_requested:
                 gate.pause()
+
+            # Only sources offering workload metadata report a percentage.
+            # This hook is runtime-only and does not change the pipeline hash.
+            set_workload_callback = getattr(
+                pipeline.head, "set_workload_callback", None
+            )
+            if callable(set_workload_callback):
+                set_workload_callback(self.workload_ready.emit)
 
             self.started.emit()
 

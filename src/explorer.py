@@ -416,6 +416,18 @@ def main():
             )
             active_learning_view.quick_review_requested.connect(quick_review_controller.show)
 
+            from src.GuidedMode import GuidedMode
+            guided_view = GuidedMode(
+                pipeline=pipeline_controller,
+                active_learning=active_learning_controller,
+                detections=detections_controller,
+                open_explorer=lambda: window.focus_view(explorer_view),
+                quick_review=quick_review_controller.show,
+                parent=window,
+            )
+            guided_view.advanced_requested.connect(lambda: window.set_guided_mode(False))
+            window.install_guided_view(guided_view)
+
             def open_active_learning_example(ref):
                 if explorer_controller.navigate_to_embedding(ref):
                     window.focus_view(explorer_view)
@@ -473,6 +485,7 @@ def main():
                 active = active_learning_model
                 detections = detections_model
                 return {
+                    "guided_step": guided_view.pages.currentIndex(),
                     "pipeline_selected": pipeline_run_model.selected_pipeline,
                     "explorer_pipeline": (
                         explorer_model.pipeline_name if explorer_model.pipeline is not None else None
@@ -512,7 +525,7 @@ def main():
                     "grouping_enabled": detections_controller._grouping_preferred,
                     "grouping_gap_s": detections_model.grouping_gap_s,
                     "window_geometry": base64.b64encode(bytes(window.saveGeometry())).decode("ascii"),
-                    "window_layout": base64.b64encode(bytes(window.saveState())).decode("ascii"),
+                    "window_layout": base64.b64encode(bytes(window.project_workspace_state())).decode("ascii"),
                 }
 
             def is_project_busy():
@@ -626,6 +639,9 @@ def main():
                 window.setWindowTitle(f"{project_path.stem} — {APP_NAME}")
 
                 def restore_project_session():
+                    saved_step = session.get("guided_step", 0)
+                    if type(saved_step) is int and 0 <= saved_step < guided_view.pages.count():
+                        guided_view.go_to(saved_step)
                     if not session_alive:
                         return
                     # GUI settings and selected objects are restored by IDs, never by
@@ -669,7 +685,7 @@ def main():
 
                     for key, restore in (
                         ("window_geometry", window.restoreGeometry),
-                        ("window_layout", window.restoreState),
+                        ("window_layout", window.restore_project_workspace_state),
                     ):
                         encoded = session.get(key)
                         if isinstance(encoded, str) and len(encoded) < 200000:
@@ -832,7 +848,12 @@ def main():
     window.show()
     if options.project is not None:
         QTimer.singleShot(0, lambda: activate_project(Path(options.project).expanduser().resolve()))
-    elif options.new_project:
+    elif options.new_project or not (
+        os.environ.get(CI_SMOKE_TEST_ENV) == "1"
+        or os.environ.get("AUDIO_ANALYSIS_CI_SMOKE_TEST") == "1"
+    ):
+        # Normal launches start with a new, unsaved Guided Mode project.
+        # Preserve the lightweight welcome-only launch for binary smoke tests.
         QTimer.singleShot(0, lambda: activate_project())
     # Automated bundled-app smoke test: only exercised in CI, and only after
     # the main window has been constructed and its event loop is running.

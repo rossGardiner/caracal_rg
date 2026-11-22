@@ -31,6 +31,8 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
         super().__init__()
 
         self.rootpath = rootpath
+        # Runtime-only observer; never part of the pipeline/cache identity.
+        self._workload_callback = None
         self.syslog_files: list[str] = []
 
         self.register_syslog_files()
@@ -170,15 +172,31 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
         return packets
 
 
-    def stream(self) -> None:
-        """
-        Emit each available AudioPacket into the pipeline.
-        """
+    def set_workload_callback(self, callback) -> None:
+        """Observe estimated (audio seconds, recording count) during stream().
 
-        for packet in self.get_audio_packets():
-            self.next_audio(
-                packet
-            )
+        This is runtime telemetry only; get_audio_packets() continues to work
+        unchanged for Explorer, and no additional audio-file scan is required.
+        """
+        self._workload_callback = callback
+
+    def stream(self) -> None:
+        """Emit packets, reporting syslog-derived workload before audio loading."""
+        import math
+
+        packets = self.get_audio_packets()
+        if self._workload_callback is not None and packets:
+            durations = [packet.duration for packet in packets]
+            if all(
+                isinstance(duration, (int, float))
+                and math.isfinite(duration)
+                and duration > 0
+                for duration in durations
+            ):
+                self._workload_callback(sum(durations), len(packets))
+
+        for packet in packets:
+            self.next_audio(packet)
                 
     def build_audio_packet_from_session(self, session, syslog_file: str) -> AudioPacket:
 

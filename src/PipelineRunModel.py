@@ -44,6 +44,9 @@ class PipelineRunModel:
     chunks_per_second: float = 0.0
     realtime_factor: float = 0.0
     error: str | None = None
+    # Estimated from source metadata, not a preflight scan of WAV files.
+    total_audio_seconds: float | None = None
+    total_recordings: int | None = None
 
     def __post_init__(self):
         self.set_available_pipelines(

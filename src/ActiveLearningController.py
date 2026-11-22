@@ -193,17 +193,30 @@ class ActiveLearningController(QObject):
         name = self.view.prompt_new_classifier_name(
             tuple(item.name for item in self.model.classifier_definitions)
         )
-        if name is None:
-            return
+        if name is not None:
+            self.create_classifier_named(name)
 
+    def create_classifier_named(self, name: str) -> bool:
+        """Create from either interface using the same persistent store."""
+        name = str(name).strip()
+        if not name:
+            self.model.error = "Enter a classifier name"
+            self.refresh_view()
+            return False
+        if any(item.name == name for item in self.model.classifier_definitions):
+            self.model.error = f"A classifier named {name!r} already exists"
+            self.refresh_view()
+            return False
         try:
             definition = ActiveLearningClassifierDefinition.create(name)
             self.model.add_classifier(definition)
             self._save_definitions()
         except (OSError, TypeError, ValueError) as exc:
             self.model.error = f"Could not create classifier: {exc}"
-
+            self.refresh_view()
+            return False
         self.refresh_view()
+        return True
 
     @Slot()
     def configure_selected_classifier(self):
