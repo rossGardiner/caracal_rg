@@ -160,6 +160,7 @@ def bundle(platform: str, model: Path) -> Path:
         "--hidden-import", "src.CaracalStreamer",
         "--collect-all", "caracal",
         "--collect-submodules", "onnxruntime",
+        "--collect-binaries", "onnxruntime",
         str(ROOT / "src" / "main.py"),
     ]
     run(args)
@@ -172,6 +173,16 @@ def bundle(platform: str, model: Path) -> Path:
         bundled_data = ROOT / "dist" / NAME / "assets" / "dummy_data"
     verify_dummy_data(bundled_data)
     print(f"Bundled Caracal example data: {bundled_data}", flush=True)
+
+    if platform.startswith(("windows", "linux")):
+        # A frozen CUDA provider library is required for a GPU-capable build.
+        # Its presence does not prove inference works on customers' hardware.
+        bundled_root = ROOT / "dist" / NAME
+        if not any(bundled_root.rglob("*onnxruntime_providers_cuda*")):
+            raise SystemExit(
+                "GPU-enabled build is missing ONNX Runtime's CUDA provider library. "
+                "Check the onnxruntime-gpu install and PyInstaller collection."
+            )
 
     if platform.startswith("macos"):
         expected = ROOT / "dist" / f"{NAME}.app" / "Contents" / "MacOS" / NAME

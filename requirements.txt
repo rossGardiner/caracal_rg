@@ -1,7 +1,11 @@
 torch
 numpy
 librosa
-onnxruntime
+# CUDA-enabled runtime is the default on Windows/Linux. The GPU wheel
+# includes CPU inference, so do not install both ONNX Runtime variants.
+onnxruntime-gpu[cuda,cudnn]>=1.21,<1.27; sys_platform == "win32" or sys_platform == "linux"
+# onnxruntime-gpu has no macOS wheels; use the standard macOS runtime.
+onnxruntime>=1.21,<2; sys_platform == "darwin"
 pytest
 PySide6
 pyqtgraph

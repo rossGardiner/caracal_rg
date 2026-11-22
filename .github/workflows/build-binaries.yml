@@ -95,6 +95,32 @@ jobs:
           python -c 'import PySide6.QtWidgets, PySide6.QtMultimedia, pyqtgraph, librosa, soundfile, onnxruntime, torch'
           python -c 'from caracal import SyslogParser; print("Caracal parser available")'
 
+      # The GPU build must not accidentally be replaced by the CPU wheel.
+      # CUDAExecutionProvider can be listed on CI hosts without an NVIDIA GPU;
+      # actual CUDA inference still needs a separate hardware test.
+      - name: Verify ONNX Runtime variant
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import sys
+          from importlib import metadata
+          import onnxruntime as ort
+
+          expected = "onnxruntime" if sys.platform == "darwin" else "onnxruntime-gpu"
+          unexpected = "onnxruntime-gpu" if expected == "onnxruntime" else "onnxruntime"
+          print(f"Installed {expected}: {metadata.version(expected)}")
+          try:
+              other_version = metadata.version(unexpected)
+          except metadata.PackageNotFoundError:
+              pass
+          else:
+              raise SystemExit(f"Conflicting ONNX Runtime package installed: {unexpected} {other_version}")
+          providers = ort.get_available_providers()
+          print("ONNX Runtime execution providers:", providers)
+          if sys.platform != "darwin" and "CUDAExecutionProvider" not in providers:
+              raise SystemExit("GPU build has no CUDAExecutionProvider; refusing to package it")
+          PYCODE
+
       - name: Report Linux glibc baseline
         if: runner.os == 'Linux'
         shell: bash
