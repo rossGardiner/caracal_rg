@@ -277,6 +277,7 @@ def _build_high_pass_filter(parameters, context):
 def _build_speedometer(parameters, context):
     return SpeedometerLink(
         report_interval_s=parameters["report_interval_s"],
+        rolling_window_s=parameters["rolling_window_s"],
     )
 
 
@@ -450,6 +451,13 @@ DEFAULT_STAGE_TYPES = (
                 label="Report interval (s)",
                 kind="number",
                 default=1.0,
+                minimum=0.001,
+            ),
+            StageParameter(
+                name="rolling_window_s",
+                label="Rolling average window (s)",
+                kind="number",
+                default=10.0,
                 minimum=0.001,
             ),
         ),
