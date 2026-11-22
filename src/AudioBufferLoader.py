@@ -12,6 +12,8 @@
 # The final buffer may be shorter than the configured size and is emitted
 # without padding.
 
+import sys
+
 from src.AudioPacket import AudioPacket
 from src.AudioBuffer import AudioBuffer
 from src.AudioReader import AudioReader
@@ -148,12 +150,19 @@ class AudioBufferLoader(PipelineLink):
         # Logical recording information
         # ======================================================
 
-        (
-            sample_rate,
-            total_samples,
-        ) = self.reader.get_info(
-            packet
-        )
+        try:
+            (
+                sample_rate,
+                total_samples,
+            ) = self.reader.get_info(
+                packet
+            )
+        except FileNotFoundError as exc:
+            # AudioReader checks WAV metadata as part of opening this
+            # recording. Skip the complete packet, without emitting any
+            # buffers or making an extra discovery-time filesystem pass.
+            self._warn_missing_audio(packet, exc)
+            return
 
         buffer_samples = max(
             1,
@@ -248,16 +257,25 @@ class AudioBufferLoader(PipelineLink):
                 samples_remaining,
             )
 
-            waveform, read_sample_rate = (
-                self.reader.read_samples(
-                    packet=packet,
-                    start_sample=(
-                        start_sample
-                        + emitted_samples
-                    ),
-                    sample_count=samples_to_read,
+            try:
+                waveform, read_sample_rate = (
+                    self.reader.read_samples(
+                        packet=packet,
+                        start_sample=(
+                            start_sample
+                            + emitted_samples
+                        ),
+                        sample_count=samples_to_read,
+                    )
                 )
-            )
+            except FileNotFoundError as exc:
+                # A file may disappear after the metadata check. We cannot
+                # retract buffers already sent downstream, so make that
+                # distinction explicit in the warning.
+                self._warn_missing_audio(
+                    packet, exc, partial=bool(emitted_samples)
+                )
+                return
 
             if (
                 read_sample_rate
@@ -318,3 +336,21 @@ class AudioBufferLoader(PipelineLink):
             ):
                 break
     
+
+    @staticmethod
+    def _warn_missing_audio(
+        packet: AudioPacket, error: FileNotFoundError, partial: bool = False
+    ) -> None:
+        """Report a missing WAV once, without suppressing other reader errors."""
+        syslog = packet.misc_metadata.get("syslog_file")
+        source = f" (syslog: {syslog})" if syslog else ""
+        note = (
+            " Some buffers were already emitted before the file disappeared."
+            if partial else ""
+        )
+        print(
+            f"WARNING: Skipping {'remainder of ' if partial else ''}recording "
+            f"{packet.recording_id or packet.id}{source}: "
+            f"audio file missing: {error}.{note}",
+            file=sys.stderr,
+        )

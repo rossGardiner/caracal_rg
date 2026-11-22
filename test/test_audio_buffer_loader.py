@@ -238,3 +238,69 @@ def test_real_reader_and_loader_cross_physical_boundaries_without_gaps(tmp_path)
     assert [buffer.valid_samples for buffer in outputs] == [4, 4, 1]
     assert [buffer.start_offset_s for buffer in outputs] == [0, 0.5, 1]
     npt.assert_array_equal(np.concatenate([buffer.waveform for buffer in outputs]), waveform[4:13])
+
+
+def test_missing_wav_in_reader_metadata_skips_recording_and_processes_next(tmp_path, capsys):
+    """No extra preflight: a packet is rejected by the reader's ordinary info call."""
+    existing = tmp_path / "first.wav"
+    good = tmp_path / "good.wav"
+    missing = tmp_path / "missing.wav"
+    sf.write(existing, np.ones(4, dtype=np.float32), 8, subtype="FLOAT")
+    sf.write(good, np.arange(8, dtype=np.float32) / 8, 8, subtype="FLOAT")
+
+    bad_packet = AudioPacket(
+        audio_paths=[str(existing), str(missing)],
+        recording_id="bad-recording",
+        misc_metadata={"syslog_file": str(tmp_path / "24.A" / "syslog.txt")},
+    )
+    good_packet = AudioPacket(audio_paths=[str(good)], recording_id="good-recording")
+    loader = AudioBufferLoader(CanonicalChunkGrid(0.5), is_caracal=False)
+    outputs = []
+    loader.register_callback(Mock(next_audio=lambda buffer: outputs.append(buffer)))
+
+    loader.next_audio(bad_packet)
+    assert outputs == []  # No half recording is emitted before the missing file.
+    warning = capsys.readouterr().err
+    assert "WARNING" in warning
+    assert "bad-recording" in warning
+    assert "24.A" in warning
+    assert str(missing) in warning
+
+    loader.next_audio(good_packet)
+    assert len(outputs) == 2
+    assert [buffer.packet for buffer in outputs] == [good_packet, good_packet]
+
+
+def test_missing_wav_during_read_warns_about_partial_output_and_continues(capsys):
+    loader, outputs, _ = make_loader(np.arange(8, dtype=np.float32))
+    bad = AudioPacket(id="bad", audio_paths=["vanished.wav"], recording_id="bad")
+    good = AudioPacket(id="good", audio_paths=["good.wav"], recording_id="good")
+    original_read = loader.reader.read_samples
+
+    def disappearing_file(*, packet, start_sample, sample_count):
+        if packet is bad and start_sample >= 4:
+            raise FileNotFoundError("Audio file does not exist: vanished.wav")
+        return original_read(packet=packet, start_sample=start_sample, sample_count=sample_count)
+
+    loader.reader.read_samples = disappearing_file
+    loader.next_audio(bad)
+    assert len(outputs) == 1
+    warning = capsys.readouterr().err
+    assert "vanished.wav" in warning
+    assert "Some buffers were already emitted" in warning
+
+    loader.next_audio(good)
+    assert [buffer.packet for buffer in outputs] == [bad, good, good]
+
+
+def test_other_reader_errors_and_downstream_missing_files_are_not_swallowed():
+    loader, _, _ = make_loader(np.arange(8, dtype=np.float32))
+    packet = AudioPacket(audio_paths=["recording.wav"])
+    loader.reader.get_info = Mock(side_effect=PermissionError("access denied"))
+    with pytest.raises(PermissionError, match="access denied"):
+        loader.next_audio(packet)
+
+    loader, _, _ = make_loader(np.arange(8, dtype=np.float32))
+    loader.register_callback(Mock(next_audio=Mock(side_effect=FileNotFoundError("sink error"))))
+    with pytest.raises(FileNotFoundError, match="sink error"):
+        loader.next_audio(packet)

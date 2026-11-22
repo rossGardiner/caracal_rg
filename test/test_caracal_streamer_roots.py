@@ -138,3 +138,16 @@ def test_unrelated_dirs_are_ignored_and_nested_logs_not_searched(
 def test_unknown_root_fails_with_readable_path(streamer_type, tmp_path):
     with pytest.raises(ValueError, match="directory does not exist"):
         streamer_type(str(tmp_path / "not-here"))
+
+
+def test_streamer_does_not_preflight_missing_wavs(streamer_type, tmp_path, capsys):
+    recording = make_session(tmp_path, "24.A")
+    missing = recording / "aud1700000000" / "file_1700000003.wav"
+    missing.unlink()
+
+    streamer = streamer_type(str(recording))
+    packets = streamer.get_audio_packets()
+
+    assert len(packets) == 1
+    assert str(missing) in packets[0].audio_paths
+    assert capsys.readouterr().err == ""  # The loader, not the streamer, checks files.
