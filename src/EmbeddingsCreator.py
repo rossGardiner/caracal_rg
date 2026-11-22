@@ -13,6 +13,7 @@ import onnxruntime as ort
 from src.AudioBuffer import AudioBuffer
 from src.PipelineLink import PipelineLink
 from src.ResourcePaths import resource_path
+from src.ONNXRuntimeDiagnostics import embedding_providers
 
 ort.preload_dlls(directory="")
 
@@ -126,18 +127,7 @@ class EmbeddingsCreator(PipelineLink):
 
         available_providers = ort.get_available_providers()
 
-        if (
-            use_cuda
-            and "CUDAExecutionProvider" in available_providers
-        ):
-            providers = [
-                "CUDAExecutionProvider",
-                "CPUExecutionProvider",
-            ]
-        else:
-            providers = [
-                "CPUExecutionProvider",
-            ]
+        providers = embedding_providers(use_cuda, available_providers)
         
         session = ort.InferenceSession(
             str(model_path_object),

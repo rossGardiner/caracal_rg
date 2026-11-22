@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
         self.terminal_dock = None
         self._create_project_menu()
         self._create_view_menu()
+        self._create_tools_menu()
         add_documentation_menu(self)
         self.welcome_page = WelcomePage(self)
         self.setCentralWidget(self.welcome_page)
@@ -398,6 +399,22 @@ class MainWindow(QMainWindow):
         project_menu.addAction(self.close_project_action)
         self.save_project_action.setShortcut("Ctrl+S")
         self.open_project_action.setShortcut("Ctrl+O")
+
+    def _create_tools_menu(self):
+        tools_menu = self.menuBar().addMenu("&Tools")
+        self.onnx_runtime_diagnostics_action = QAction("ONNX Runtime Diagnostics…", self)
+        tools_menu.addAction(self.onnx_runtime_diagnostics_action)
+        self._onnx_runtime_diagnostics_dialog = None
+        self.onnx_runtime_diagnostics_action.triggered.connect(self._open_onnx_runtime_diagnostics)
+
+    def _open_onnx_runtime_diagnostics(self):
+        if self._onnx_runtime_diagnostics_dialog is None:
+            from src.ONNXRuntimeDiagnosticsDialog import ONNXRuntimeDiagnosticsDialog
+
+            self._onnx_runtime_diagnostics_dialog = ONNXRuntimeDiagnosticsDialog(self)
+        self._onnx_runtime_diagnostics_dialog.show()
+        self._onnx_runtime_diagnostics_dialog.raise_()
+        self._onnx_runtime_diagnostics_dialog.activateWindow()
 
     def _create_view_menu(self):
         """Keep every workspace accessible even when its dock is hidden."""
