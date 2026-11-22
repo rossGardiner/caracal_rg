@@ -6,7 +6,7 @@
 # Note, due to inheritance, it is technically possible to pipe AudioPackets into CaracalStreamer, but this implementation doesnt make use of that feature. 
 
 import os
-from glob import glob
+from pathlib import Path
 from hashlib import sha256
 
 from caracal import SyslogParser
@@ -26,7 +26,7 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
         """Create a CaracalStreamer for a CARACAL data root.
 
         Args:
-            rootpath (str): Top-level directory containing per-session subdirectories.
+            rootpath (str): A CARACAL session directory or a parent of sessions.
         """
         super().__init__()
 
@@ -45,36 +45,59 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
             "rootpath": self.rootpath,
         }
 
-    def register_syslog_files(self) -> None:
-        """Discover syslog.txt files under rootpath and register them.
+    @staticmethod
+    def discover_syslogs(rootpath: str) -> tuple[list[str], list[str]]:
+        """Find sessions at the selected level and flag apparent missing syslogs.
 
-        One syslog.txt is expected for each immediate subdirectory.
+        Returns (syslog paths, names of recording folders without syslogs).
+        Unrelated folders are ignored; discovery is deliberately not recursive.
         """
-        nr_expected_logs = sum(
-            os.path.isdir(os.path.join(self.rootpath, p))
-            for p in glob("*", root_dir=self.rootpath)
+        root = Path(rootpath).expanduser()
+        if not root.is_dir():
+            raise ValueError(f"CARACAL directory does not exist: {root}")
+
+        if (root / "syslog.txt").is_file():
+            return [str(root / "syslog.txt")], []
+
+        folders = sorted((path for path in root.iterdir() if path.is_dir()))
+        syslogs = []
+        missing = []
+        for folder in folders:
+            syslog = folder / "syslog.txt"
+            if syslog.is_file():
+                syslogs.append(str(syslog))
+            elif any(
+                child.is_dir() and child.name.startswith("aud")
+                and child.name[3:].isdigit()
+                for child in folder.iterdir()
+            ):
+                missing.append(folder.name)
+
+        # The root itself may be a recording folder with a missing syslog.
+        if not syslogs and not missing and any(
+            folder.name.startswith("aud") and folder.name[3:].isdigit()
+            for folder in folders
+        ):
+            missing.append(root.name)
+
+        return syslogs, missing
+
+    def register_syslog_files(self) -> None:
+        """Register available sessions; warn when recording folders lack logs."""
+        self.syslog_files, self.missing_syslogs = self.discover_syslogs(
+            self.rootpath
         )
-
-        matches = [
-            os.path.join(self.rootpath, p)
-            for p in glob("*/syslog.txt", root_dir=self.rootpath)
-            if os.path.isfile(os.path.join(self.rootpath, p))
-        ]
-
-        if len(matches) != nr_expected_logs:
+        if self.missing_syslogs:
             print(
-                f"WARNING: Expected {nr_expected_logs} syslogs, found {len(matches)}. "
-                "CaracalStreamer will continue with only the syslogs found. "
-                "Audio from directories with missing syslogs will not be carried forward."
+                "WARNING: CARACAL folders without syslog.txt will be skipped: "
+                + ", ".join(self.missing_syslogs)
+            )
+        if not self.syslog_files:
+            raise ValueError(
+                f"No syslog.txt found in {self.rootpath} or its immediate "
+                "session subdirectories."
             )
 
-        if matches:
-            self.syslog_files = matches
-        else:
-            raise Exception(
-                "No syslogs found! Are you sure this is a valid CARACAL data directory?"
-            )
-            
     def get_audio_packets(self, progress_callback=None) -> list[AudioPacket]:
         """
         Parse the registered CARACAL sessions and return them as
@@ -160,7 +183,7 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
     def build_audio_packet_from_session(self, session, syslog_file: str) -> AudioPacket:
 
         audio_paths = [
-            os.path.join(self.rootpath, session.path, audio_file.subpath)
+            os.path.join(os.path.dirname(syslog_file), audio_file.subpath)
             for audio_file in session.audioFiles
         ]
 
@@ -171,7 +194,7 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
             is_whole=True,
             lat=session.header.stats.median_GPS_lat,
             lon=session.header.stats.median_GPS_lon,
-            recording_id=self._recording_id(audio_paths),
+            recording_id=self._recording_id(audio_paths, syslog_file),
             display_name=(
                 f"{session.header.headerID.deviceID} "
             ),
@@ -195,12 +218,13 @@ class CaracalStreamer(PipelineLink, AudioPacketSource):
 
 
 
-    def _recording_id(self, audio_paths):
+    def _recording_id(self, audio_paths, syslog_file):
+        # Include the session folder in the identity regardless of whether the
+        # user selected that folder or its parent. Existing cache keys for
+        # multi-session roots remain unchanged.
+        identity_root = os.path.dirname(os.path.dirname(syslog_file))
         relative_paths = [
-            os.path.relpath(
-                path,
-                self.rootpath,
-            )
+            os.path.relpath(path, identity_root)
             for path in audio_paths
         ]
 

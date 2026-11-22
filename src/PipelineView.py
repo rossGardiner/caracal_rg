@@ -1,5 +1,7 @@
 """Presentation for pipeline editing, execution, and benchmarking."""
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
 from src.PipelineDefinition import StageDefinition
 from src.PipelineFactory import StageType
 from src.PipelineRunModel import PipelineRunModel, PipelineRunStatus
+from src.ResourcePaths import resource_path
 
 
 class PipelineView(QWidget):
@@ -557,6 +560,45 @@ class _StageEditorDialog(QDialog):
             values[parameter.name] = value
 
         return values
+
+    def accept(self):
+        if self._stage_type.stage_type == "caracal_streamer":
+            from src.CaracalStreamer import CaracalStreamer
+
+            editor = self._editors["rootpath"].findChild(QLineEdit)
+            value = editor.text()
+            root = (
+                resource_path("assets/dummy_data")
+                if value.replace("\\", "/") == "assets/dummy_data"
+                else Path(value).expanduser()
+            )
+            try:
+                syslogs, missing = CaracalStreamer.discover_syslogs(str(root))
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "CARACAL folder problem", str(exc))
+                return
+
+            if not syslogs:
+                QMessageBox.warning(
+                    self,
+                    "No CARACAL syslogs found",
+                    f"No syslog.txt found in {root} or its immediate session "
+                    "folders. Choose a different folder.",
+                )
+                return
+
+            if missing:
+                names = ", ".join(missing[:10])
+                if len(missing) > 10:
+                    names += f" (and {len(missing) - 10} more)"
+                QMessageBox.warning(
+                    self,
+                    "Some CARACAL sessions will be skipped",
+                    f"{len(missing)} recording folder(s) have no syslog.txt: "
+                    f"{names}\n\nThe other {len(syslogs)} session log(s) "
+                    "will still be processed.",
+                )
+        super().accept()
 
     def _create_editor(self, parameter, value):
         if parameter.kind == "boolean":
