@@ -227,6 +227,9 @@ class PipelineView(QWidget):
 
         self.error_value = QLabel()
         self.error_value.setWordWrap(True)
+        self.error_value.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
         layout = QVBoxLayout(self)
         layout.addWidget(pipeline_group)
         layout.addWidget(benchmark_group)

@@ -1,6 +1,7 @@
 """Background execution control and telemetry for long-running pipelines."""
 
 import threading
+import traceback
 import time
 from collections.abc import Callable
 
@@ -275,9 +276,8 @@ class PipelineRunner(QObject):
             if run_started:
                 self._emit_progress()
 
-            self.failed.emit(
-                f"{type(exc).__name__}: {exc}"
-            )
+            # Preserve the complete stage traceback for both the terminal and GUI.
+            self.failed.emit(traceback.format_exc().rstrip())
         finally:
             with self._lock:
                 self._gate = None

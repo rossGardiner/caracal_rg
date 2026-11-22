@@ -16,6 +16,8 @@ from types import SimpleNamespace
 from PySide6.QtCore import QByteArray, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressDialog
 
+from src.ErrorDialogs import show_error
+
 from src.ApplicationTheme import apply_application_theme
 from src.MainWindow import MainWindow
 from src.ProjectFile import ProjectFile
@@ -82,13 +84,13 @@ def main():
             try:
                 ProjectFile.inspect(project_path)
             except Exception as exc:
-                QMessageBox.critical(window, "Could not open project", str(exc))
+                show_error(window, "Could not open project", str(exc))
                 return
         dispose_current()
         try:
             current = build_project(project_path)
         except Exception as exc:
-            QMessageBox.critical(window, "Could not open project", str(exc))
+            show_error(window, "Could not open project", str(exc))
             window.show_welcome()
 
     def request_transition(destination, title):
@@ -129,7 +131,7 @@ def main():
         try:
             ProjectFile.inspect(path)
         except Exception as exc:
-            QMessageBox.critical(window, "Could not open project", str(exc))
+            show_error(window, "Could not open project", str(exc))
             return
         request_transition(path, "Open Project")
 
@@ -561,7 +563,7 @@ def main():
                     )
                     classifiers = tuple(active_learning_model.classifier_definitions)
                 except Exception as exc:
-                    QMessageBox.critical(window, "Save failed", str(exc))
+                    show_error(window, "Save failed", str(exc))
                     return False
                 project_save_number += 1
                 number = project_save_number
@@ -613,7 +615,7 @@ def main():
                     return
                 pending_after_save = None
                 finish_project_save()
-                QMessageBox.critical(window, "Save failed", message)
+                show_error(window, "Save failed", message)
 
             project_jobs.ready.connect(project_saved)
             project_jobs.failed.connect(project_failed)

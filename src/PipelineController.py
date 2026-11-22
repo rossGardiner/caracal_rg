@@ -1,6 +1,7 @@
 """Controller for the pipeline-management tab."""
 
 from functools import partial
+import sys
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -276,7 +277,7 @@ class PipelineController(QObject):
     def pipeline_activation_failed(self, message: str):
         self.model.activation_pending = False
         self._activation_pipeline_name = None
-        self.model.error = str(message)
+        self._show_model_error(str(message))
         self.refresh_view()
 
     @Slot(int)
@@ -386,7 +387,7 @@ class PipelineController(QObject):
             )
         ):
             self.model.status = PipelineRunStatus.FAILED
-            self.model.error = "A pipeline is already running"
+            self._show_model_error("A pipeline is already running")
             self.refresh_view()
 
     @Slot()
@@ -473,8 +474,7 @@ class PipelineController(QObject):
     @Slot(str)
     def _on_failed(self, message: str):
         self.model.status = PipelineRunStatus.FAILED
-        self.model.error = message
-        self.refresh_view()
+        self._show_model_error(message)
 
     def _selected_definition(self) -> PipelineDefinition:
         return self.pipeline_definitions[self.model.selected_pipeline]
@@ -575,6 +575,7 @@ class PipelineController(QObject):
         return f"{base} {suffix}"
 
     def _show_model_error(self, message: str):
+        print(f"Pipeline error: {message}", file=sys.stderr, flush=True)
         self.model.error = message
         self.refresh_view()
 
