@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import numpy as np
 
+from src.ApplicationIdentity import STORAGE_DIRECTORY
+
 
 class EmbeddingCache:
     """Simple persistent on-disk cache for numeric embeddings.
@@ -28,6 +30,18 @@ class EmbeddingCache:
             root_directory (str): Path to the cache root directory. Expanded
                 and resolved to an absolute path.
         """
+        # Keep "cache/embeddings" as a portable default in saved pipelines.
+        # Only resolve it to a machine-specific location when the cache opens.
+        if str(root_directory) == "cache/embeddings":
+            from PySide6.QtCore import QStandardPaths
+
+            base = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.GenericCacheLocation
+            )
+            if not base:
+                raise OSError("Could not determine the system cache directory")
+            root_directory = Path(base) / STORAGE_DIRECTORY / "embeddings"
+
         self.root_directory = Path(
             root_directory
         ).expanduser().resolve()

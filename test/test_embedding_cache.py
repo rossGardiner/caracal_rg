@@ -1,4 +1,6 @@
 import json
+import sys
+from types import ModuleType, SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -6,6 +8,7 @@ import numpy.testing as npt
 import pytest
 
 from src.EmbeddingCache import EmbeddingCache
+from src.ApplicationIdentity import STORAGE_DIRECTORY
 
 
 @pytest.fixture
@@ -51,6 +54,45 @@ def rewrite_archive(path, *, updates=None, remove=None):
     if remove is not None:
         del fields[remove]
     np.savez_compressed(path, **fields)
+
+
+def test_default_cache_uses_os_cache_location(monkeypatch, tmp_path):
+    # Stub QStandardPaths so this checks the resolution without depending on
+    # the test machine's OS or writing into the user's real cache directory.
+    qt_package = ModuleType("PySide6")
+    qt_package.__path__ = []
+    qt_core = ModuleType("PySide6.QtCore")
+    location = object()
+    expected_base = tmp_path / "os-cache"
+    qt_core.QStandardPaths = SimpleNamespace(
+        StandardLocation=SimpleNamespace(GenericCacheLocation=location),
+        writableLocation=lambda requested: str(expected_base) if requested is location else "",
+    )
+    monkeypatch.setitem(sys.modules, "PySide6", qt_package)
+    monkeypatch.setitem(sys.modules, "PySide6.QtCore", qt_core)
+
+    expected = expected_base / STORAGE_DIRECTORY / "embeddings"
+    assert EmbeddingCache().root_directory == expected
+    # Existing projects saved with the old default get the new location too.
+    assert EmbeddingCache("cache/embeddings").root_directory == expected
+    assert expected.is_dir()
+    # An explicit custom location must remain untouched.
+    custom = tmp_path / "my-cache"
+    assert EmbeddingCache(custom).root_directory == custom
+
+
+def test_missing_os_cache_location_fails_clearly(monkeypatch):
+    qt_package = ModuleType("PySide6")
+    qt_package.__path__ = []
+    qt_core = ModuleType("PySide6.QtCore")
+    qt_core.QStandardPaths = SimpleNamespace(
+        StandardLocation=SimpleNamespace(GenericCacheLocation=object()),
+        writableLocation=lambda location: "",
+    )
+    monkeypatch.setitem(sys.modules, "PySide6", qt_package)
+    monkeypatch.setitem(sys.modules, "PySide6.QtCore", qt_core)
+    with pytest.raises(OSError, match="system cache directory"):
+        EmbeddingCache()
 
 
 def test_save_and_load_roundtrip(tmp_path):
