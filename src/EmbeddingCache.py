@@ -195,15 +195,15 @@ class EmbeddingCache:
                 "chunk_index cannot be negative"
             )
 
-        safe_recording_id = self._safe_filename(
-            str(recording_id)
+        safe_recording_id = self._cache_hash_directory_name(
+            recording_id
         )
 
         safe_embedding_name = self._safe_filename(
             embedding_name
         )
 
-        safe_pipeline_hash = self._safe_filename(
+        safe_pipeline_hash = self._cache_hash_directory_name(
             pipeline_hash
         )
 
@@ -229,9 +229,9 @@ class EmbeddingCache:
 
         recording_directory = (
             self.root_directory
-            / self._safe_filename(pipeline_hash)
+            / self._cache_hash_directory_name(pipeline_hash)
             / self._safe_filename(embedding_name)
-            / self._safe_filename(str(recording_id))
+            / self._cache_hash_directory_name(recording_id)
         )
 
         if not recording_directory.is_dir():
@@ -333,7 +333,7 @@ class EmbeddingCache:
 
         space_directory = (
             self.root_directory
-            / self._safe_filename(pipeline_hash)
+            / self._cache_hash_directory_name(pipeline_hash)
             / self._safe_filename(embedding_name)
         )
 
@@ -406,7 +406,7 @@ class EmbeddingCache:
 
         space_directory = (
             self.root_directory
-            / self._safe_filename(pipeline_hash)
+            / self._cache_hash_directory_name(pipeline_hash)
             / self._safe_filename(embedding_name)
         )
 
@@ -504,6 +504,20 @@ class EmbeddingCache:
             yield from sorted(
                 recording_directory.glob("[!.]*.npz")
             )
+
+    @staticmethod
+    def _cache_hash_directory_name(value):
+        """Use 24 hex characters for SHA-256 IDs in cache paths only.
+
+        Keep non-SHA-256 identifiers unchanged for compatibility. The complete
+        recording and pipeline IDs remain stored and validated in each NPZ.
+        """
+        value = str(value)
+        if len(value) == 64 and all(
+            character in "0123456789abcdefABCDEF" for character in value
+        ):
+            value = value[:24]
+        return EmbeddingCache._safe_filename(value)
 
     @staticmethod
     def _safe_filename(value):

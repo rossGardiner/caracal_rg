@@ -457,3 +457,81 @@ def test_safe_filename_and_tempfile_removed(tmp_path):
     )
     assert loaded is not None
     npt.assert_array_equal(loaded["values"], values)
+
+
+def test_sha256_ids_use_24_character_cache_directories(cache):
+    # The real pipeline and recording IDs are full SHA-256 hex digests.
+    pipeline_hash = "a" * 64
+    recording_id = "b" * 64
+    embedding_name = "perch_v2"
+    values = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+
+    path = cache.save(
+        recording_id=recording_id,
+        chunk_index=0,
+        pipeline_hash=pipeline_hash,
+        embedding_name=embedding_name,
+        values=values,
+        metadata={"source": "test"},
+    )
+
+    assert path.relative_to(cache.root_directory).parts == (
+        "a" * 24,
+        embedding_name,
+        "b" * 24,
+        "00000000.npz",
+    )
+    assert cache.has_embedding(recording_id, 0, pipeline_hash, embedding_name)
+    npt.assert_array_equal(
+        cache.load(recording_id, 0, pipeline_hash, embedding_name)["values"],
+        values,
+    )
+
+    # Files use shorter directories but retain complete identities internally.
+    with np.load(path, allow_pickle=False) as saved:
+        assert saved["recording_id"].item() == recording_id
+        assert saved["pipeline_hash"].item() == pipeline_hash
+
+    listed = cache.list_embeddings(recording_id, pipeline_hash, embedding_name)
+    assert len(listed) == 1
+    assert listed[0]["recording_id"] == recording_id
+    assert [(item["recording_id"], item["chunk_index"]) for item in
+            cache.iter_embedding_refs(pipeline_hash, embedding_name)] == [
+        (recording_id, 0)
+    ]
+    assert [(item["recording_id"], item["chunk_index"]) for item in
+            cache.iter_embeddings(pipeline_hash, embedding_name)] == [
+        (recording_id, 0)
+    ]
+
+
+def test_shortened_hash_paths_still_validate_full_identities(cache):
+    pipeline_hash = "e" * 64
+    recording_id = "f" * 64
+    path = cache.save(
+        recording_id=recording_id,
+        chunk_index=0,
+        pipeline_hash=pipeline_hash,
+        embedding_name="perch_v2",
+        values=np.array([42.0]),
+    )
+    # An archive copied into an otherwise valid short path must not be trusted
+    # if its full recording identity differs.
+    rewrite_archive(path, updates={"recording_id": "f" * 63 + "0"})
+    with pytest.raises(ValueError, match="recording_id mismatch"):
+        cache.load(recording_id, 0, pipeline_hash, "perch_v2")
+
+
+def test_non_sha256_identifiers_keep_original_directory_names(cache):
+    recording_id = "recording-a-real-human-readable-identifier"
+    pipeline_hash = "pipeline-human-readable-identifier"
+    path = cache.save(
+        recording_id=recording_id,
+        chunk_index=1,
+        pipeline_hash=pipeline_hash,
+        embedding_name="model",
+        values=[1.0],
+    )
+    assert path.relative_to(cache.root_directory).parts == (
+        pipeline_hash, "model", recording_id, "00000001.npz"
+    )
